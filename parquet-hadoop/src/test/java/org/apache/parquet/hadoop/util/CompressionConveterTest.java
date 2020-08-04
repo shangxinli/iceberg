@@ -22,15 +22,11 @@ import com.google.common.collect.ImmutableMap;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.parquet.HadoopReadOptions;
-import org.apache.parquet.ParquetReadOptions;
 import org.apache.parquet.column.ParquetProperties;
-import org.apache.parquet.column.page.PageReadStore;
 import org.apache.parquet.example.data.Group;
 import org.apache.parquet.example.data.simple.SimpleGroup;
-import org.apache.parquet.example.data.simple.convert.GroupRecordConverter;
 import org.apache.parquet.format.DataPageHeader;
 import org.apache.parquet.format.DataPageHeaderV2;
-import org.apache.parquet.format.DictionaryPageHeader;
 import org.apache.parquet.format.PageHeader;
 import org.apache.parquet.hadoop.ParquetFileReader;
 import org.apache.parquet.hadoop.ParquetFileWriter;
@@ -46,10 +42,6 @@ import org.apache.parquet.hadoop.metadata.ParquetMetadata;
 import org.apache.parquet.hadoop.util.CompressionConverter.TransParquetFileReader;
 import org.apache.parquet.internal.column.columnindex.ColumnIndex;
 import org.apache.parquet.internal.column.columnindex.OffsetIndex;
-import org.apache.parquet.io.ColumnIOFactory;
-import org.apache.parquet.io.MessageColumnIO;
-import org.apache.parquet.io.RecordReader;
-import org.apache.parquet.schema.GroupType;
 import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.PrimitiveType;
 import org.junit.Assert;
@@ -64,11 +56,8 @@ import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
 
 import static org.apache.parquet.format.converter.ParquetMetadataConverter.NO_FILTER;
-import static org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName.BINARY;
 import static org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName.INT64;
 import static org.apache.parquet.schema.Type.Repetition.OPTIONAL;
-import static org.apache.parquet.schema.Type.Repetition.REPEATED;
-import static org.apache.parquet.schema.Type.Repetition.REQUIRED;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertTrue;
 
@@ -77,7 +66,8 @@ public class CompressionConveterTest {
   private Configuration conf = new Configuration();
   private Map<String, String> extraMeta
     = ImmutableMap.of("key1", "value1", "key2", "value2");
-  private CompressionConverter compressionConverter = new CompressionConverter();
+  //private CompressionConverter compressionConverter = new CompressionConverter();
+  private ColumnNullifier compressionConverter = new ColumnNullifier();
   private Random rnd = new Random(5);
 
   @Test
@@ -93,6 +83,21 @@ public class CompressionConveterTest {
       }
     }
   }
+
+
+  @Test
+  public void testWrite() throws Exception {
+    int numRecord = 1;
+    TestDocs testDocs = new TestDocs(numRecord);
+    String inputFile = createParquetFile(conf, extraMeta, numRecord, "input", "UNCOMPRESSED", ParquetProperties.WriterVersion.PARQUET_1_0, ParquetProperties.DEFAULT_PAGE_SIZE, testDocs);
+    //String outputFile = createTempFile("output_trans");
+    String outputFile = "/Users/shangx/a.parquet";
+
+    convertCompression(conf, inputFile, outputFile, "UNCOMPRESSED");
+
+  }
+
+
 
   private void testInternal(String srcCodec, String destCodec, ParquetProperties.WriterVersion writerVersion, int pageSize) throws Exception {
     int numRecord = 1000;
@@ -114,11 +119,13 @@ public class CompressionConveterTest {
 
     ParquetMetadata metaData = ParquetFileReader.readFooter(conf, inPath, NO_FILTER);
     MessageType schema = metaData.getFileMetaData().getSchema();
-    ParquetFileWriter writer = new ParquetFileWriter(conf, schema, outPath, ParquetFileWriter.Mode.CREATE);
+    ParquetFileWriter writer = new ParquetFileWriter(conf, schema, outPath, ParquetFileWriter.Mode.OVERWRITE);
     writer.start();
 
     try (TransParquetFileReader reader = new TransParquetFileReader(HadoopInputFile.fromPath(inPath, conf), HadoopReadOptions.builder(conf).build())) {
       compressionConverter.processBlocks(reader, writer, metaData, schema, metaData.getFileMetaData().getCreatedBy(), codecName);
+    } catch (Exception e) {
+      //
     } finally {
       writer.end(metaData.getFileMetaData().getKeyValueMetaData());
     }
@@ -226,12 +233,12 @@ public class CompressionConveterTest {
   private String createParquetFile(Configuration conf, Map<String, String> extraMeta, int numRecord, String prefix, String codec,
                                          ParquetProperties.WriterVersion writerVersion, int pageSize, TestDocs testDocs) throws IOException {
     MessageType schema = new MessageType("schema",
-      new PrimitiveType(REQUIRED, INT64, "DocId"),
+      new PrimitiveType(OPTIONAL, INT64, "DocId") /*,
       new PrimitiveType(REQUIRED, BINARY, "Name"),
       new PrimitiveType(REQUIRED, BINARY, "Gender"),
       new GroupType(OPTIONAL, "Links",
         new PrimitiveType(REPEATED, BINARY, "Backward"),
-        new PrimitiveType(REPEATED, BINARY, "Forward")));
+        new PrimitiveType(REPEATED, BINARY, "Forward"))*/);
 
     conf.set(GroupWriteSupport.PARQUET_EXAMPLE_SCHEMA, schema.toString());
 
@@ -249,11 +256,11 @@ public class CompressionConveterTest {
       for (int i = 0; i < numRecord; i++) {
         SimpleGroup g = new SimpleGroup(schema);
         g.add("DocId", testDocs.docId[i]);
-        g.add("Name", testDocs.name[i]);
+        /*g.add("Name", testDocs.name[i]);
         g.add("Gender", testDocs.gender[i]);
         Group links = g.addGroup("Links");
         links.add(0, testDocs.linkBackward[i]);
-        links.add(1, testDocs.linkForward[i]);
+        links.add(1, testDocs.linkForward[i]);*/
         writer.write(g);
       }
     }

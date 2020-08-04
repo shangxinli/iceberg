@@ -69,7 +69,7 @@ public class CompressionConverter {
   }
 
   public void processBlocks(TransParquetFileReader reader, ParquetFileWriter writer, ParquetMetadata meta, MessageType schema,
-                             String createdBy, CompressionCodecName codecName) throws IOException {
+                            String createdBy, CompressionCodecName codecName) throws IOException {
     int blockIndex = 0;
     PageReadStore store = reader.readNextRowGroup();
     while (store != null) {
