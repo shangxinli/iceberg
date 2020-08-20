@@ -19,6 +19,7 @@
 
 package org.apache.iceberg.parquet;
 
+import java.io.Serializable;
 import java.nio.ByteBuffer;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.expressions.BoundPredicate;
@@ -37,6 +38,8 @@ import org.apache.parquet.filter2.predicate.Operators;
 import org.apache.parquet.io.api.Binary;
 
 class ParquetFilters {
+  private static Operation[] supportedOps = {Operation.IS_NULL, Operation.NOT_NULL, Operation.EQ, Operation.NOT_EQ,
+                                             Operation.GT, Operation.GT_EQ, Operation.LT, Operation.LT_EQ};
 
   private ParquetFilters() {
   }
@@ -52,31 +55,31 @@ class ParquetFilters {
     }
   }
 
-  private static class ConvertFilterToParquet extends ExpressionVisitor<FilterPredicate> {
+  static class ConvertFilterToParquet extends ExpressionVisitor<FilterPredicate> {
     private final Schema schema;
     private final boolean caseSensitive;
 
-    private ConvertFilterToParquet(Schema schema, boolean caseSensitive) {
+    ConvertFilterToParquet(Schema schema, boolean caseSensitive) {
       this.schema = schema;
       this.caseSensitive = caseSensitive;
     }
 
     @Override
     public FilterPredicate alwaysTrue() {
-      return AlwaysTrue.INSTANCE;
+      throw new UnsupportedOperationException("Not implemented yet");
     }
 
     @Override
     public FilterPredicate alwaysFalse() {
-      return AlwaysFalse.INSTANCE;
+      throw new UnsupportedOperationException("Not implemented yet");
     }
 
     @Override
     public FilterPredicate not(FilterPredicate child) {
       if (child == AlwaysTrue.INSTANCE) {
-        return AlwaysFalse.INSTANCE;
+        throw new UnsupportedOperationException("Not implemented yet");
       } else if (child == AlwaysFalse.INSTANCE) {
-        return AlwaysTrue.INSTANCE;
+        throw new UnsupportedOperationException("AlwaysTrue is a placeholder only");
       }
       return FilterApi.not(child);
     }
@@ -84,11 +87,11 @@ class ParquetFilters {
     @Override
     public FilterPredicate and(FilterPredicate left, FilterPredicate right) {
       if (left == AlwaysFalse.INSTANCE || right == AlwaysFalse.INSTANCE) {
-        return AlwaysFalse.INSTANCE;
+        throw new UnsupportedOperationException("Not implemented yet");
       } else if (left == AlwaysTrue.INSTANCE) {
-        return right;
+        throw new UnsupportedOperationException("AlwaysTrue is a placeholder only");
       } else if (right == AlwaysTrue.INSTANCE) {
-        return left;
+        throw new UnsupportedOperationException("Not implemented yet");
       }
       return FilterApi.and(left, right);
     }
@@ -96,11 +99,11 @@ class ParquetFilters {
     @Override
     public FilterPredicate or(FilterPredicate left, FilterPredicate right) {
       if (left == AlwaysTrue.INSTANCE || right == AlwaysTrue.INSTANCE) {
-        return AlwaysTrue.INSTANCE;
+        throw new UnsupportedOperationException("Not implemented yet");
       } else if (left == AlwaysFalse.INSTANCE) {
-        return right;
+        throw new UnsupportedOperationException("Not implemented yet");
       } else if (right == AlwaysFalse.INSTANCE) {
-        return left;
+        throw new UnsupportedOperationException("Not implemented yet");
       }
       return FilterApi.or(left, right);
     }
@@ -117,7 +120,7 @@ class ParquetFilters {
 
       Operation op = pred.op();
       BoundReference<T> ref = (BoundReference<T>) pred.term();
-      String path = schema.idToAlias(ref.fieldId());
+      String path = schema.findField(ref.fieldId()).name();
       Literal<T> lit;
       if (pred.isUnaryPredicate()) {
         lit = null;
@@ -165,9 +168,9 @@ class ParquetFilters {
       if (bound instanceof BoundPredicate) {
         return predicate((BoundPredicate<?>) bound);
       } else if (bound == Expressions.alwaysTrue()) {
-        return AlwaysTrue.INSTANCE;
+        throw new UnsupportedOperationException("Not implemented yet");
       } else if (bound == Expressions.alwaysFalse()) {
-        return AlwaysFalse.INSTANCE;
+        throw new UnsupportedOperationException("Not implemented yet");
       }
       throw new UnsupportedOperationException("Cannot convert to Parquet filter: " + pred);
     }
@@ -176,6 +179,7 @@ class ParquetFilters {
   @SuppressWarnings("checkstyle:MethodTypeParameterName")
   private static <C extends Comparable<C>, COL extends Operators.Column<C> & Operators.SupportsLtGt>
       FilterPredicate pred(Operation op, COL col, C value) {
+    // TODO: When adding support below, we need to add them to 'supportedOps' also
     switch (op) {
       case IS_NULL:
         return FilterApi.eq(col, null);
@@ -217,7 +221,7 @@ class ParquetFilters {
         "Type not supported yet: " + value.getClass().getName());
   }
 
-  private static class AlwaysTrue implements FilterPredicate {
+  private static class AlwaysTrue implements FilterPredicate, Serializable {
     static final AlwaysTrue INSTANCE = new AlwaysTrue();
 
     @Override
@@ -226,7 +230,7 @@ class ParquetFilters {
     }
   }
 
-  private static class AlwaysFalse implements FilterPredicate {
+  private static class AlwaysFalse implements FilterPredicate, Serializable {
     static final AlwaysFalse INSTANCE = new AlwaysFalse();
 
     @Override

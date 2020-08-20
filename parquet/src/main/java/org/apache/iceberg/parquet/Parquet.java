@@ -44,6 +44,7 @@ import org.apache.iceberg.deletes.PositionDeleteWriter;
 import org.apache.iceberg.encryption.EncryptionKeyMetadata;
 import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.expressions.Expression;
+import org.apache.iceberg.expressions.ExpressionVisitors;
 import org.apache.iceberg.hadoop.HadoopInputFile;
 import org.apache.iceberg.hadoop.HadoopOutputFile;
 import org.apache.iceberg.io.CloseableIterable;
@@ -64,14 +65,18 @@ import org.apache.parquet.avro.AvroReadSupport;
 import org.apache.parquet.avro.AvroWriteSupport;
 import org.apache.parquet.column.ParquetProperties;
 import org.apache.parquet.column.ParquetProperties.WriterVersion;
+import org.apache.parquet.filter2.predicate.FilterPredicate;
 import org.apache.parquet.hadoop.ParquetFileReader;
 import org.apache.parquet.hadoop.ParquetFileWriter;
+import org.apache.parquet.hadoop.ParquetInputFormat;
 import org.apache.parquet.hadoop.ParquetReader;
 import org.apache.parquet.hadoop.ParquetWriter;
 import org.apache.parquet.hadoop.api.ReadSupport;
 import org.apache.parquet.hadoop.api.WriteSupport;
 import org.apache.parquet.hadoop.metadata.CompressionCodecName;
 import org.apache.parquet.schema.MessageType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.apache.iceberg.TableProperties.PARQUET_COMPRESSION;
 import static org.apache.iceberg.TableProperties.PARQUET_COMPRESSION_DEFAULT;
@@ -85,6 +90,8 @@ import static org.apache.iceberg.TableProperties.PARQUET_ROW_GROUP_SIZE_BYTES;
 import static org.apache.iceberg.TableProperties.PARQUET_ROW_GROUP_SIZE_BYTES_DEFAULT;
 
 public class Parquet {
+  private static final Logger LOG = LoggerFactory.getLogger(Parquet.class);
+
   private Parquet() {
   }
 
@@ -565,7 +572,8 @@ public class Parquet {
       return this;
     }
 
-    @SuppressWarnings({"unchecked", "checkstyle:CyclomaticComplexity"})
+
+    @SuppressWarnings({"unchecked", "checkstyle:CyclomaticComplexity", "CatchBlockLogException"})
     public <D> CloseableIterable<D> build() {
       if (readerFunc != null || batchedReaderFunc != null) {
         ParquetReadOptions.Builder optionsBuilder;
@@ -574,6 +582,17 @@ public class Parquet {
           Configuration conf = new Configuration(((HadoopInputFile) file).getConf());
           for (String property : READ_PROPERTIES_TO_REMOVE) {
             conf.unset(property);
+          }
+
+          if (filter != null) {
+            FilterPredicate filterPredicate;
+            try {
+              filterPredicate = ExpressionVisitors.visit(filter,
+                      new ParquetFilters.ConvertFilterToParquet(schema, caseSensitive));
+              ParquetInputFormat.setFilterPredicate(conf, filterPredicate);
+            } catch (UnsupportedOperationException e) {
+              LOG.warn("Filter {} is not supported and go without filter", filter);
+            }
           }
           optionsBuilder = HadoopReadOptions.builder(conf);
         } else {
