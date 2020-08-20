@@ -38,6 +38,18 @@ import org.apache.parquet.io.api.Binary;
 
 class ParquetFilters {
 
+  private static Operation[] supportedOps = {Operation.IS_NULL, Operation.NOT_NULL, Operation.EQ, Operation.NOT_EQ,
+      Operation.GT, Operation.GT_EQ, Operation.LT, Operation.LT_EQ};
+
+  public static boolean isSupportedOps(Operation op) {
+    for (Operation supported : supportedOps) {
+      if (supported.equals(op)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private ParquetFilters() {
   }
 
@@ -117,7 +129,7 @@ class ParquetFilters {
 
       Operation op = pred.op();
       BoundReference<T> ref = (BoundReference<T>) pred.term();
-      String path = schema.idToAlias(ref.fieldId());
+      String path = schema.findField(ref.fieldId()).name();
       Literal<T> lit;
       if (pred.isUnaryPredicate()) {
         lit = null;
@@ -214,7 +226,7 @@ class ParquetFilters {
       return (C) Binary.fromReusedByteBuffer((ByteBuffer) value);
     }
     throw new UnsupportedOperationException(
-        "Type not supported yet: " + value.getClass().getName());
+            "Type not supported yet: " + value.getClass().getName());
   }
 
   private static class AlwaysTrue implements FilterPredicate {

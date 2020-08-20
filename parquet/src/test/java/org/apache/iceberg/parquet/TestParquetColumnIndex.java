@@ -27,9 +27,13 @@ import java.util.function.Function;
 import org.apache.avro.generic.GenericData;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.avro.AvroSchemaUtil;
+import org.apache.iceberg.data.parquet.GenericParquetReaders;
+import org.apache.iceberg.expressions.Expression;
+import org.apache.iceberg.expressions.Expressions;
+import org.apache.iceberg.io.CloseableIterator;
+import org.apache.iceberg.parquet.Parquet.ReadBuilder;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.types.Types.IntegerType;
-import org.apache.parquet.hadoop.ParquetFileReader;
 import org.apache.parquet.schema.MessageType;
 import org.junit.Assert;
 import org.junit.Rule;
@@ -41,7 +45,7 @@ import static org.apache.iceberg.TableProperties.PARQUET_ROW_GROUP_SIZE_BYTES;
 import static org.apache.iceberg.parquet.ParquetWritingTestUtils.writeRecords;
 import static org.apache.iceberg.types.Types.NestedField.optional;
 
-public class TestParquet {
+public class TestParquetColumnIndex {
 
   Schema schema = new Schema(
           optional(1, "intCol", IntegerType.get())
@@ -51,28 +55,33 @@ public class TestParquet {
   public TemporaryFolder temp = new TemporaryFolder();
 
   @Test
-  public void testRowGroupSizeConfigurable() throws IOException {
-    // Without an explicit writer function
-    File parquetFile = generateFileWithTwoRowGroups(null);
-
-    try (ParquetFileReader reader = ParquetFileReader.open(ParquetIO.file(localInput(parquetFile)))) {
-      Assert.assertEquals(2, reader.getRowGroups().size());
-    }
+  public void testColumnIndexFilter() throws IOException {
+    File parquetFile = generateFileWithTwoRowGroups(ParquetAvroWriter::buildWriter);
+    int totalCount = getRecordCount(parquetFile, null);
+    int filterCount = getRecordCount(parquetFile,
+            Expressions.and(Expressions.notNull("intCol"), Expressions.equal("intCol", 1)));
+    Assert.assertTrue(filterCount < totalCount);
   }
 
-  @Test
-  public void testRowGroupSizeConfigurableWithWriter() throws IOException {
-    File parquetFile = generateFileWithTwoRowGroups(ParquetAvroWriter::buildWriter);
-
-    try (ParquetFileReader reader = ParquetFileReader.open(ParquetIO.file(localInput(parquetFile)))) {
-      Assert.assertEquals(2, reader.getRowGroups().size());
+  private int getRecordCount(File parquetFile, Expression expr) {
+    List<Object> records = new ArrayList<>();
+    ReadBuilder builder = Parquet.read(localInput(parquetFile))
+            .project(schema)
+            .createReaderFunc(fileSchema -> GenericParquetReaders.buildReader(schema, fileSchema));
+    if (expr != null) {
+      builder.filterRecords(true).filter(expr);
     }
+    CloseableIterator iter = builder.build().iterator();
+    while (iter.hasNext()) {
+      records.add(iter.next());
+    }
+    return records.size();
   }
 
   private File generateFileWithTwoRowGroups(Function<MessageType, ParquetValueWriter<?>> createWriterFunc)
       throws IOException {
 
-    int minimumRowGroupRecordCount = 100;
+    int minimumRowGroupRecordCount = 1000000;
     int desiredRecordCount = minimumRowGroupRecordCount + 1;
 
     List<GenericData.Record> records = new ArrayList<>(desiredRecordCount);

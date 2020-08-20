@@ -72,6 +72,8 @@ import org.apache.parquet.hadoop.api.ReadSupport;
 import org.apache.parquet.hadoop.api.WriteSupport;
 import org.apache.parquet.hadoop.metadata.CompressionCodecName;
 import org.apache.parquet.schema.MessageType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.apache.iceberg.TableProperties.PARQUET_COMPRESSION;
 import static org.apache.iceberg.TableProperties.PARQUET_COMPRESSION_DEFAULT;
@@ -85,6 +87,8 @@ import static org.apache.iceberg.TableProperties.PARQUET_ROW_GROUP_SIZE_BYTES;
 import static org.apache.iceberg.TableProperties.PARQUET_ROW_GROUP_SIZE_BYTES_DEFAULT;
 
 public class Parquet {
+  private static final Logger LOG = LoggerFactory.getLogger(Parquet.class);
+
   private Parquet() {
   }
 
@@ -565,7 +569,8 @@ public class Parquet {
       return this;
     }
 
-    @SuppressWarnings({"unchecked", "checkstyle:CyclomaticComplexity"})
+
+    @SuppressWarnings({"unchecked", "checkstyle:CyclomaticComplexity", "CatchBlockLogException"})
     public <D> CloseableIterable<D> build() {
       if (readerFunc != null || batchedReaderFunc != null) {
         ParquetReadOptions.Builder optionsBuilder;
@@ -575,9 +580,29 @@ public class Parquet {
           for (String property : READ_PROPERTIES_TO_REMOVE) {
             conf.unset(property);
           }
+
+          /*if (filter != null) {
+            FilterPredicate filterPredicate = null;
+            try {
+              filterPredicate = ExpressionVisitors.visit(filter,
+                      new ParquetFilters.ConvertFilterToParquet(schema, caseSensitive));
+              ParquetInputFormat.setFilterPredicate(conf, filterPredicate);
+            } catch (UnsupportedOperationException e) {
+              LOG.warn("Filter {} is not supported and go without filter", filter);
+            }
+          } */
           optionsBuilder = HadoopReadOptions.builder(conf);
         } else {
           optionsBuilder = ParquetReadOptions.builder();
+        }
+
+        if (filter != null && ParquetFilters.isSupportedOps(filter.op())) {
+          optionsBuilder.useRecordFilter(filterRecords);
+          optionsBuilder.withRecordFilter(ParquetFilters.convert(schema, filter, caseSensitive));
+          //System.out.println("1 filter pusing down filter.op() " + filter.op());
+        } else {
+          //if (filter == null)  System.out.println("1 pusing is null");
+          //else  System.out.println("pusing is not null");
         }
 
         for (Map.Entry<String, String> entry : properties.entrySet()) {

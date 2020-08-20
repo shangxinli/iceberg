@@ -23,9 +23,11 @@ import java.io.File;
 import java.io.IOException;
 import java.util.Iterator;
 import org.apache.avro.generic.GenericData;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.AssertHelpers;
 import org.apache.iceberg.Files;
 import org.apache.iceberg.Schema;
+import org.apache.iceberg.hadoop.HadoopInputFile;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.FileAppender;
 import org.apache.iceberg.parquet.Parquet;
@@ -45,6 +47,7 @@ import org.junit.Assume;
 import org.junit.Ignore;
 import org.junit.Test;
 
+import static org.apache.iceberg.expressions.Expressions.lessThan;
 import static org.apache.iceberg.types.Types.NestedField.required;
 
 public class TestParquetVectorizedReads extends AvroDataTest {
@@ -73,7 +76,7 @@ public class TestParquetVectorizedReads extends AvroDataTest {
     try (FileAppender<GenericData.Record> writer = getParquetWriter(schema, testFile)) {
       writer.addAll(expected);
     }
-    assertRecordsMatch(schema, numRecords, expected, testFile, setAndCheckArrowValidityVector, reuseContainers);
+    assertRecordsMismatchMatch(schema, expected, testFile, setAndCheckArrowValidityVector, reuseContainers);
   }
 
   protected int getNumRows() {
@@ -116,6 +119,39 @@ public class TestParquetVectorizedReads extends AvroDataTest {
         TestHelpers.assertEqualsBatch(schema.asStruct(), expectedIter, batch, setAndCheckArrowValidityBuffer);
       }
       Assert.assertEquals(expectedSize, numRowsRead);
+    }
+  }
+
+  private void assertRecordsMismatchMatch(
+          Schema schema, Iterable<GenericData.Record> expected, File testFile,
+          boolean setAndCheckArrowValidityBuffer, boolean reuseContainers)
+          throws IOException {
+    Parquet.ReadBuilder readBuilder = Parquet.read(HadoopInputFile.fromPath(
+            new org.apache.hadoop.fs.Path(testFile.getPath()), new Configuration()))
+            .filter(lessThan("id", Integer.MIN_VALUE))
+            .filterRecords(true)
+            .project(schema)
+            .recordsPerBatch(10000)
+            .createBatchedReaderFunc(type -> VectorizedSparkParquetReaders.buildReader(
+                    schema,
+                    type,
+                    setAndCheckArrowValidityBuffer));
+    if (reuseContainers) {
+      readBuilder.reuseContainers();
+    }
+    try (CloseableIterable<ColumnarBatch> batchReader =
+                 readBuilder.build()) {
+      Iterator<GenericData.Record> expectedIter = expected.iterator();
+      Iterator<ColumnarBatch> batches = batchReader.iterator();
+      int numRowsRead = 0;
+      while (batches.hasNext()) {
+        ColumnarBatch batch = batches.next();
+        numRowsRead += batch.numRows();
+        TestHelpers.assertEqualsBatch(schema.asStruct(), expectedIter, batch, setAndCheckArrowValidityBuffer);
+      }
+
+      // lessThan MIN_VALUE will have 0 result
+      Assert.assertEquals(0, numRowsRead);
     }
   }
 
