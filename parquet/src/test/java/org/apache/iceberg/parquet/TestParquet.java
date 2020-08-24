@@ -65,6 +65,17 @@ public class TestParquet {
     }
   }
 
+  @Test
+  public void testColumnIndexFilter() throws IOException {
+    /*File parquetFile = generateFileWithTwoRowGroups(ParquetAvroWriter::buildWriter);
+    FilterPredicate filterPredicate = FilterApi.eq(FilterApi.intColumn("intCol"), 1);
+    FilterCompat.Filter filter = FilterCompat.get(filterPredicate);
+    ParquetReadOptions readOptions = ParquetReadOptions.builder().useRecordFilter().withRecordFilter(filter).build();
+    try (ParquetFileReader reader = ParquetFileReader.open(ParquetIO.file(localInput(parquetFile)), readOptions)) {
+      Assert.assertEquals(1, reader.readNextFilteredRowGroup().getRowCount());
+    } */
+  }
+
   private File generateFileWithTwoRowGroups(Function<MessageType, ParquetValueWriter<?>> createWriterFunc)
       throws IOException {
     Schema schema = new Schema(

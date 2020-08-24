@@ -585,7 +585,7 @@ public class Parquet {
           }
 
           if (filter != null) {
-            FilterPredicate filterPredicate;
+            FilterPredicate filterPredicate = null;
             try {
               filterPredicate = ExpressionVisitors.visit(filter,
                       new ParquetFilters.ConvertFilterToParquet(schema, caseSensitive));

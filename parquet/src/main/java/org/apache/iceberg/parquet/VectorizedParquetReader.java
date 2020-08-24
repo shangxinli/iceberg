@@ -155,8 +155,14 @@ public class VectorizedParquetReader<T> extends CloseableGroup implements Closea
         // Because of the issue of PARQUET-1901, we cannot just call readNextFilteredRowGroup()
         if (hasRecordFilter) {
           pages = reader.readNextFilteredRowGroup();
+          if (true) {
+            throw new RuntimeException("has filter: " + pages.getRowCount());
+          }
         } else {
           pages = reader.readNextRowGroup();
+          if (true) {
+            throw new RuntimeException("has no filter: " + pages.getRowCount());
+          }
         }
       } catch (IOException e) {
         throw new RuntimeIOException(e);
