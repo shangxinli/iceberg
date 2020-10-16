@@ -42,25 +42,40 @@ import org.junit.rules.TemporaryFolder;
 
 import static org.apache.iceberg.Files.localInput;
 import static org.apache.iceberg.TableProperties.PARQUET_PAGE_SIZE_BYTES;
+import static org.apache.iceberg.TableProperties.PARQUET_ROW_GROUP_SIZE_BYTES;
 import static org.apache.iceberg.parquet.ParquetWritingTestUtils.writeRecords;
 import static org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName.INT32;
 import static org.apache.parquet.schema.Type.Repetition.REQUIRED;
 
 public class TestParquetColumnIndex {
 
+  private final int recordNum = 1000000;
+  private final int lookupVal = 519530;
+
   private MessageType parquetSchema = new MessageType("schema",
       new PrimitiveType(REQUIRED, INT32, "intCol"));
   private Schema schema = ParquetSchemaUtil.convert(parquetSchema);
+  org.apache.avro.Schema avroSchema = AvroSchemaUtil.convert(schema.asStruct());
 
   @Rule
   public TemporaryFolder temp = new TemporaryFolder();
 
   @Test
   public void testColumnIndexFilter() throws IOException {
-    File parquetFile = generateFileWithMultiplePages(ParquetAvroWriter::buildWriter);
+    File parquetFile = generateFileWithSeq(ParquetAvroWriter::buildWriter);
+    readAndCompare(parquetFile);
+  }
+
+  @Test
+  public void testColumnIndexFilterWithHole() throws IOException {
+    File parquetFile = generateFileWithSeqAndHole(ParquetAvroWriter::buildWriter);
+    readAndCompare(parquetFile);
+  }
+
+  private void readAndCompare(File parquetFile) {
     int totalCount = getPageRecordCount(parquetFile, null);
     int filterCount = getPageRecordCount(parquetFile,
-            Expressions.and(Expressions.notNull("intCol"), Expressions.equal("intCol", 1)));
+            Expressions.and(Expressions.notNull("intCol"), Expressions.equal("intCol", lookupVal)));
     Assert.assertTrue(filterCount < totalCount);
   }
 
@@ -81,24 +96,63 @@ public class TestParquetColumnIndex {
     return records.size();
   }
 
-  private File generateFileWithMultiplePages(Function<MessageType, ParquetValueWriter<?>> createWriterFunc)
-      throws IOException {
+  private File generateFileWithSeq(Function<MessageType, ParquetValueWriter<?>> createWriterFunc)
+          throws IOException {
+    List<Integer> seq = generateSequences();
+    List<GenericData.Record> records = convertToRecords(seq);
+    return write(records, createWriterFunc);
+  }
 
-    int recordNum = 1000000;
+  private File generateFileWithSeqAndHole(Function<MessageType, ParquetValueWriter<?>> createWriterFunc)
+          throws IOException {
+    List<Integer> seq = generateSequencesWithHoles();
+    List<GenericData.Record> records = convertToRecords(seq);
+    return write(records, createWriterFunc);
+  }
+
+  private File generateFileWithSeqAndHole2(Function<MessageType, ParquetValueWriter<?>> createWriterFunc)
+      throws IOException {
+    List<Integer> seq = generateSequencesWithHoles();
+    List<GenericData.Record> records = convertToRecords(seq);
+    return write(records, createWriterFunc);
+  }
+
+  private List<GenericData.Record> convertToRecords(List<Integer> seq) {
     List<GenericData.Record> records = new ArrayList<>(recordNum);
-    org.apache.avro.Schema avroSchema = AvroSchemaUtil.convert(schema.asStruct());
-    for (int i = 1; i <= recordNum; i++) {
+    for (int num : seq) {
       GenericData.Record record = new GenericData.Record(avroSchema);
-      record.put("intCol", i);
+      record.put("intCol", num);
       records.add(record);
     }
+    return records;
+  }
 
-    // We make it 1000 pages, so that we can skip some
+  private List<Integer> generateSequences() {
+    List<Integer> res = new ArrayList<>();
+    for (int i = 1; i <= recordNum; i++) {
+      res.add(i);
+    }
+    return res;
+  }
+
+  private List<Integer> generateSequencesWithHoles() {
+    List<Integer> res = new ArrayList<>();
+    for (int i = 1; i <= 3 * recordNum; i++) {
+      res.add(i * 3);
+    }
+    return res;
+  }
+
+  private File write(List<GenericData.Record> records,
+                     Function<MessageType, ParquetValueWriter<?>> createWriterFunc) throws IOException {
+    // We make it multiple row groups and pages, so that we can skip some pages
     return writeRecords(temp,
             schema,
             ImmutableMap.of(
                     PARQUET_PAGE_SIZE_BYTES,
-                    Integer.toString((recordNum / 1000) * Integer.BYTES)),
+                    Integer.toString((recordNum / 10000) * Integer.BYTES),
+                    PARQUET_ROW_GROUP_SIZE_BYTES,
+                    Integer.toString((recordNum / 10 ) * Integer.BYTES)),
             createWriterFunc,
             records.toArray(new GenericData.Record[] {}));
   }

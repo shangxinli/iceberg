@@ -582,11 +582,10 @@ public class Parquet {
           optionsBuilder = ParquetReadOptions.builder();
         }
 
-        if (filter != null &&
-                schema.getAliases() != null &&
-                ParquetFilters.isSupportedFilter(filter, schema, caseSensitive)) {
+        if (filter != null /* &&
+                ParquetFilters.isSupportedFilter(filter, schema, caseSensitive)*/) {
           optionsBuilder.useRecordFilter(filterRecords);
-          optionsBuilder.withRecordFilter(ParquetFilters.convert(schema, filter, caseSensitive));
+          optionsBuilder.withRecordFilter(ParquetFilters.convert(getSchemaFromFile(), filter, caseSensitive));
         }
 
         for (Map.Entry<String, String> entry : properties.entrySet()) {
@@ -630,17 +629,10 @@ public class Parquet {
       if (filter != null) {
         // TODO: should not need to get the schema to push down before opening the file.
         // Parquet should allow setting a filter inside its read support
-        MessageType type;
-        try (ParquetFileReader schemaReader = ParquetFileReader.open(ParquetIO.file(file))) {
-          type = schemaReader.getFileMetaData().getSchema();
-        } catch (IOException e) {
-          throw new RuntimeIOException(e);
-        }
-        Schema fileSchema = ParquetSchemaUtil.convert(type);
         builder.useStatsFilter()
             .useDictionaryFilter()
             .useRecordFilter(filterRecords)
-            .withFilter(ParquetFilters.convert(fileSchema, filter, caseSensitive));
+            .withFilter(ParquetFilters.convert(getSchemaFromFile(), filter, caseSensitive));
       } else {
         // turn off filtering
         builder.useStatsFilter(false)
@@ -661,6 +653,16 @@ public class Parquet {
       }
 
       return new ParquetIterable<>(builder);
+    }
+
+    private Schema getSchemaFromFile() {
+      MessageType type;
+      try (ParquetFileReader schemaReader = ParquetFileReader.open(ParquetIO.file(file))) {
+        type = schemaReader.getFileMetaData().getSchema();
+      } catch (IOException e) {
+        throw new RuntimeIOException(e);
+      }
+      return ParquetSchemaUtil.convert(type);
     }
   }
 

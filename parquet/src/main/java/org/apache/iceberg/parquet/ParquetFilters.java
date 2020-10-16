@@ -76,7 +76,8 @@ class ParquetFilters {
     } else if (expr.op().equals(Operation.NOT)) {
       return isSupportedFilter(((Not) expr).child(), schema, caseSensitive);
     } else {
-      return isSupportedOp(expr) && isSupportedType(expr, schema, caseSensitive);
+      // return isSupportedOp(expr) && isSupportedType(expr, schema, caseSensitive);
+      return isSupportedOp(expr);
     }
   }
 
