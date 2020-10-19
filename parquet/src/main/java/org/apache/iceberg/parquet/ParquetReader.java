@@ -97,6 +97,8 @@ public class ParquetReader<T> extends CloseableGroup implements CloseableIterabl
     private T last = null;
     private List<BlockMetaData> blocks;
     private long skippedValues;
+    private long skippedBlocks;
+    private boolean finished;
 
     FileIterator(ReadConf<T> conf) {
       this.reader = conf.reader();
@@ -107,31 +109,42 @@ public class ParquetReader<T> extends CloseableGroup implements CloseableIterabl
       this.rowGroupsStartRowPos = conf.startRowPositions();
       this.blocks = reader.getRowGroups();
       this.skippedValues = 0;
+      this.skippedBlocks = 0;
+      this.finished = false;
       this.hasRecordFilter = conf.hasRecordFilter();
     }
 
     @Override
     public boolean hasNext() {
+      if (finished) {
+        return false;
+      }
+
       return valuesRead + skippedValues < totalValues;
     }
 
     @Override
     public T next() {
+      boolean isSuccess = true;
       if (valuesRead >= nextRowGroupStart) {
-        advance();
+        isSuccess = advance();
       }
 
-      if (reuseContainers) {
-        this.last = model.read(last);
+      if (isSuccess) {
+        if (reuseContainers) {
+          this.last = model.read(last);
+        } else {
+          this.last = model.read(null);
+        }
+        valuesRead += 1;
+
+        return last;
       } else {
-        this.last = model.read(null);
+        return null;
       }
-      valuesRead += 1;
-
-      return last;
     }
 
-    private void advance() {
+    private boolean advance() {
       while (shouldSkip[nextRowGroup]) {
         nextRowGroup += 1;
         reader.skipNextRowGroup();
@@ -149,7 +162,14 @@ public class ParquetReader<T> extends CloseableGroup implements CloseableIterabl
         throw new RuntimeIOException(e);
       }
 
+      if (pages == null) {
+        // Unless Parquet (PARQUET-1927) provides number of records skipped directly, we don't have good way to update hasNext()
+        finished = true;
+        return false;
+      }
+
       long blockRowCount = blocks.get(nextRowGroup).getRowCount();
+      // TODO: add pages == null check in the Preconditions.checkState
       Preconditions.checkState(blockRowCount >= pages.getRowCount(),
               "Number of values in the block, %s, does not great or equal number of values after filtering, %s",
               blockRowCount, pages.getRowCount());
@@ -159,6 +179,8 @@ public class ParquetReader<T> extends CloseableGroup implements CloseableIterabl
       nextRowGroup += 1;
 
       model.setPageSource(pages, rowPosition);
+
+      return true;
     }
 
     @Override
