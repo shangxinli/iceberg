@@ -92,10 +92,12 @@ class ReadConf<T> {
     Map<Long, Long> offsetToStartPos = generateOffsetToStartPos();
     this.startRowPositions = new long[rowGroups.size()];
 
-    ParquetMetricsRowGroupFilter statsFilter = null;
+    ParquetMetricsRowGroupFilter blockStatsFilter = null;
+    ParquetMetricsPageFilter pageStatsFilter = null;
     ParquetDictionaryRowGroupFilter dictFilter = null;
     if (filter != null) {
-      statsFilter = new ParquetMetricsRowGroupFilter(expectedSchema, filter, caseSensitive);
+      blockStatsFilter = new ParquetMetricsRowGroupFilter(expectedSchema, filter, caseSensitive);
+      pageStatsFilter = new ParquetMetricsPageFilter(expectedSchema, filter, caseSensitive);
       dictFilter = new ParquetDictionaryRowGroupFilter(expectedSchema, filter, caseSensitive);
     }
 
@@ -103,8 +105,15 @@ class ReadConf<T> {
     for (int i = 0; i < shouldSkip.length; i += 1) {
       BlockMetaData rowGroup = rowGroups.get(i);
       startRowPositions[i] = offsetToStartPos.get(rowGroup.getStartingPos());
+      /**
+       * Can we remove blockStatsFilter since pageStatsFilter can do the work at finer-grain? No, for two reasons.
+       *   1) If the data is written using parquet-mr with the older version than 1.11.0, no column index  available.
+       *   2) To use ColumnIndex, we need reader to read the page statistics from the disk. 'blockStatsFilter'
+       *   can optimize it a little when it returns 'false'.
+       */
       boolean shouldRead = filter == null || (
-          statsFilter.shouldRead(typeWithIds, rowGroup) &&
+          blockStatsFilter.shouldRead(typeWithIds, rowGroup) &&
+              pageStatsFilter.shouldRead(typeWithIds, rowGroup, reader) &&
               dictFilter.shouldRead(typeWithIds, rowGroup, reader.getDictionaryReader(rowGroup)));
       this.shouldSkip[i] = !shouldRead;
       if (shouldRead) {
