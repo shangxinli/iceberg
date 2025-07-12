@@ -133,6 +133,7 @@ subprojects {
           def snapshotsRepoUrl = project.hasProperty('mavenSnapshotsRepo') ? "$mavenSnapshotsRepo" : "$apacheSnapshotsRepoUrl"
           def releasesRepoUrl = project.hasProperty('mavenReleasesRepo') ? "$mavenReleasesRepo" : "$apacheReleasesRepoUrl"
           url = project.hasProperty('release') ? releasesRepoUrl : snapshotsRepoUrl
+          allowInsecureProtocol = true
         }
       }
     }
