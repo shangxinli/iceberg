@@ -69,3 +69,6 @@ derby.log
 
 # jenv
 .java-version
+
+# Large Java distribution files
+.java/*.tar.gz
