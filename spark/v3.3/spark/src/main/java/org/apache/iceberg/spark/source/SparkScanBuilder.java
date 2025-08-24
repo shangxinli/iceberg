@@ -143,6 +143,9 @@ public class SparkScanBuilder
 
   @Override
   public Filter[] pushFilters(Filter[] filters) {
+    long startTime = System.currentTimeMillis();
+    LOG.info("Citrus-Iceberg: Starting filter pushdown for {} filters", filters.length);
+    
     // there are 3 kinds of filters:
     // (1) filters that can be pushed down completely and don't have to evaluated by Spark
     //     (e.g. filters that select entire partitions)
@@ -184,6 +187,10 @@ public class SparkScanBuilder
 
     this.filterExpressions = expressions;
     this.pushedFilters = pushableFilters.toArray(new Filter[0]);
+    
+    long duration = System.currentTimeMillis() - startTime;
+    LOG.info("Citrus-Iceberg: Filter pushdown completed in {} ms, pushed {} filters", 
+             duration, pushableFilters.size());
 
     return postScanFilters.toArray(new Filter[0]);
   }
@@ -416,11 +423,19 @@ public class SparkScanBuilder
 
   @Override
   public Scan build() {
+    long startTime = System.currentTimeMillis();
+    LOG.info("Citrus-Iceberg: Starting scan build");
+    
+    Scan result;
     if (localScan != null) {
-      return localScan;
+      result = localScan;
     } else {
-      return buildBatchScan();
+      result = buildBatchScan();
     }
+    
+    long duration = System.currentTimeMillis() - startTime;
+    LOG.info("Citrus-Iceberg: Scan build completed in {} ms", duration);
+    return result;
   }
 
   private Scan buildBatchScan() {

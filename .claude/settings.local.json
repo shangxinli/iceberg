@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(./gradlew:*)",
+      "Bash(mvn:*)",
+      "Bash(git describe:*)",
+      "Bash(/usr/libexec/java_home:*)",
+      "Bash(export:*)",
+      "Bash(git log:*)",
+      "Bash(git tag:*)",
+      "Bash(git ls-tree:*)",
+      "Bash(git fetch:*)",
+      "Bash(git checkout:*)",
+      "Bash(git push:*)",
+      "Bash(java:*)",
+      "Bash(echo \"sparkVersions property: $sparkVersions\")",
+      "Bash(jar tf:*)",
+      "Read(//Users/shangx/code/fievel/**)",
+      "Bash(chmod:*)"
+    ],
+    "deny": []
+  }
+}

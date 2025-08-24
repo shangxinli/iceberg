@@ -187,7 +187,8 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
   }
 
   private void commitOperation(SnapshotUpdate<?> operation, String description) {
-    LOG.info("Committing {} to table {}", description, table);
+    long startTime = System.currentTimeMillis();
+    LOG.info("Citrus-Iceberg: Starting commit operation: {} to table {}", description, table);
     if (applicationId != null) {
       operation.set("spark.app.id", applicationId);
     }
@@ -212,11 +213,15 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
     }
 
     try {
-      long start = System.currentTimeMillis();
+      long commitStart = System.currentTimeMillis();
       operation.commit(); // abort is automatically called if this fails
-      long duration = System.currentTimeMillis() - start;
-      LOG.info("Committed in {} ms", duration);
+      long commitDuration = System.currentTimeMillis() - commitStart;
+      long totalDuration = System.currentTimeMillis() - startTime;
+      LOG.info("Citrus-Iceberg: Commit operation completed - commit took {} ms, total {} ms", 
+               commitDuration, totalDuration);
     } catch (Exception e) {
+      long totalDuration = System.currentTimeMillis() - startTime;
+      LOG.error("Citrus-Iceberg: Commit operation failed after {} ms", totalDuration);
       cleanupOnAbort = e instanceof CleanableFailure;
       throw e;
     }
@@ -676,6 +681,8 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
   private static class UnpartitionedDataWriter implements DataWriter<InternalRow> {
     private final FileWriter<InternalRow, DataWriteResult> delegate;
     private final FileIO io;
+    private long writeStartTime;
+    private int recordCount;
 
     private UnpartitionedDataWriter(
         SparkFileWriterFactory writerFactory,
@@ -686,20 +693,30 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
       this.delegate =
           new RollingDataWriter<>(writerFactory, fileFactory, io, targetFileSize, spec, null);
       this.io = io;
+      this.writeStartTime = System.currentTimeMillis();
+      this.recordCount = 0;
     }
 
     @Override
     public void write(InternalRow record) throws IOException {
       delegate.write(record);
+      recordCount++;
     }
 
     @Override
     public WriterCommitMessage commit() throws IOException {
+      long commitStart = System.currentTimeMillis();
       close();
 
       DataWriteResult result = delegate.result();
       TaskCommit taskCommit = new TaskCommit(result.dataFiles().toArray(new DataFile[0]));
       taskCommit.reportOutputMetrics();
+      
+      long commitDuration = System.currentTimeMillis() - commitStart;
+      long totalWriteDuration = System.currentTimeMillis() - writeStartTime;
+      LOG.debug("Citrus-Iceberg: Unpartitioned task wrote {} records in {} ms, commit took {} ms", 
+               recordCount, totalWriteDuration, commitDuration);
+      
       return taskCommit;
     }
 
@@ -723,6 +740,8 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
     private final PartitionSpec spec;
     private final PartitionKey partitionKey;
     private final InternalRowWrapper internalRowWrapper;
+    private long writeStartTime;
+    private int recordCount;
 
     private PartitionedDataWriter(
         SparkFileWriterFactory writerFactory,
@@ -742,21 +761,31 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
       this.spec = spec;
       this.partitionKey = new PartitionKey(spec, dataSchema);
       this.internalRowWrapper = new InternalRowWrapper(dataSparkType, dataSchema.asStruct());
+      this.writeStartTime = System.currentTimeMillis();
+      this.recordCount = 0;
     }
 
     @Override
     public void write(InternalRow row) throws IOException {
       partitionKey.partition(internalRowWrapper.wrap(row));
       delegate.write(row, spec, partitionKey);
+      recordCount++;
     }
 
     @Override
     public WriterCommitMessage commit() throws IOException {
+      long commitStart = System.currentTimeMillis();
       close();
 
       DataWriteResult result = delegate.result();
       TaskCommit taskCommit = new TaskCommit(result.dataFiles().toArray(new DataFile[0]));
       taskCommit.reportOutputMetrics();
+      
+      long commitDuration = System.currentTimeMillis() - commitStart;
+      long totalWriteDuration = System.currentTimeMillis() - writeStartTime;
+      LOG.debug("Citrus-Iceberg: Partitioned task wrote {} records in {} ms, commit took {} ms", 
+               recordCount, totalWriteDuration, commitDuration);
+      
       return taskCommit;
     }
 

@@ -36,8 +36,12 @@ import org.apache.spark.broadcast.Broadcast;
 import org.apache.spark.sql.connector.read.Batch;
 import org.apache.spark.sql.connector.read.InputPartition;
 import org.apache.spark.sql.connector.read.PartitionReaderFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 class SparkBatch implements Batch {
+
+  private static final Logger LOG = LoggerFactory.getLogger(SparkBatch.class);
 
   private final JavaSparkContext sparkContext;
   private final Table table;
@@ -72,6 +76,9 @@ class SparkBatch implements Batch {
 
   @Override
   public InputPartition[] planInputPartitions() {
+    long startTime = System.currentTimeMillis();
+    LOG.info("Citrus-Iceberg: Starting input partition planning for {} task groups", taskGroups.size());
+    
     // broadcast the table metadata as input partitions will be sent to executors
     Broadcast<Table> tableBroadcast =
         sparkContext.broadcast(SerializableTableWithSize.copyOf(table));
@@ -94,6 +101,10 @@ class SparkBatch implements Batch {
                         caseSensitive,
                         localityEnabled));
 
+    long duration = System.currentTimeMillis() - startTime;
+    LOG.info("Citrus-Iceberg: Input partition planning completed in {} ms, created {} partitions", 
+             duration, partitions.length);
+    
     return partitions;
   }
 

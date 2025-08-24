@@ -44,8 +44,12 @@ import org.apache.iceberg.util.StructLikeUtil;
 import org.apache.iceberg.util.StructProjection;
 import org.apache.iceberg.util.Tasks;
 import org.apache.iceberg.util.ThreadPools;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public abstract class BaseTaskWriter<T> implements TaskWriter<T> {
+  private static final Logger LOG = LoggerFactory.getLogger(BaseTaskWriter.class);
+  
   private final List<DataFile> completedDataFiles = Lists.newArrayList();
   private final List<DeleteFile> completedDeleteFiles = Lists.newArrayList();
   private final CharSequenceSet referencedDataFiles = CharSequenceSet.empty();
@@ -97,15 +101,24 @@ public abstract class BaseTaskWriter<T> implements TaskWriter<T> {
 
   @Override
   public WriteResult complete() throws IOException {
+    long startTime = System.currentTimeMillis();
+    LOG.debug("Citrus-Iceberg: Starting task writer completion");
+    
     close();
 
     Preconditions.checkState(failure == null, "Cannot return results from failed writer", failure);
 
-    return WriteResult.builder()
+    WriteResult result = WriteResult.builder()
         .addDataFiles(completedDataFiles)
         .addDeleteFiles(completedDeleteFiles)
         .addReferencedDataFiles(referencedDataFiles)
         .build();
+    
+    long duration = System.currentTimeMillis() - startTime;
+    LOG.debug("Citrus-Iceberg: Task writer completion finished in {} ms, wrote {} data files, {} delete files", 
+             duration, completedDataFiles.size(), completedDeleteFiles.size());
+    
+    return result;
   }
 
   /** Base equality delta writer to write both insert records and equality-deletes. */

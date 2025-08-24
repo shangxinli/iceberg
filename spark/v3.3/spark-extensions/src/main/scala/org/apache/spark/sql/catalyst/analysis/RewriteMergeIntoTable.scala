@@ -69,6 +69,8 @@ import org.apache.spark.sql.types.IntegerType
 import org.apache.spark.sql.types.StructField
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
+import org.slf4j.Logger
+import org.slf4j.LoggerFactory
 
 /**
  * Assigns a rewrite plan for v2 tables that support rewriting data to handle MERGE statements.
@@ -78,6 +80,8 @@ import org.apache.spark.sql.util.CaseInsensitiveStringMap
  */
 object RewriteMergeIntoTable extends RewriteRowLevelIcebergCommand with PredicateHelper {
 
+  private final val LOG = LoggerFactory.getLogger(getClass)
+
   private final val ROW_FROM_SOURCE = "__row_from_source"
   private final val ROW_FROM_TARGET = "__row_from_target"
   private final val ROW_ID = "__row_id"
@@ -85,7 +89,11 @@ object RewriteMergeIntoTable extends RewriteRowLevelIcebergCommand with Predicat
   private final val ROW_FROM_SOURCE_REF = FieldReference(ROW_FROM_SOURCE)
   private final val ROW_FROM_TARGET_REF = FieldReference(ROW_FROM_TARGET)
 
-  override def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperators {
+  override def apply(plan: LogicalPlan): LogicalPlan = {
+    val startTime = System.currentTimeMillis()
+    LOG.info("Citrus-Iceberg: Starting MERGE logical plan rewrite")
+    
+    val result = plan resolveOperators {
     case m @ MergeIntoIcebergTable(aliasedTable, source, cond, matchedActions, notMatchedActions, None)
         if m.resolved && m.aligned && matchedActions.isEmpty && notMatchedActions.size == 1 =>
 
@@ -167,6 +175,11 @@ object RewriteMergeIntoTable extends RewriteRowLevelIcebergCommand with Predicat
         case p =>
           throw new AnalysisException(s"$p is not an Iceberg table")
       }
+    }
+    
+    val duration = System.currentTimeMillis() - startTime
+    LOG.info(s"Citrus-Iceberg: MERGE logical plan rewrite completed in ${duration} ms")
+    result
   }
 
   // build a rewrite plan for sources that support replacing groups of data (e.g. files, partitions)
