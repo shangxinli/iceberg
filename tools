@@ -1,5 +1,6 @@
 # build the fat jar
-JAVA_HOME=$(/usr/libexec/java_home -v 11) ./gradlew -DsparkVersions=3.3 -DscalaVersion=2.12 :iceberg-spark:iceberg-spark-runtime-3.3_2.12:shadowJar -x test -x integrationTest
+#JAVA_HOME=$(/usr/libexec/java_home -v 11) ./gradlew -DsparkVersions=3.3 -DscalaVersion=2.12 :iceberg-spark:iceberg-spark-runtime-3.3_2.12:shadowJar -x test -x integrationTest
+JAVA_HOME=$(/usr/libexec/java_home -v 11) ./gradlew -DsparkVersions=3.3 -DscalaVersion=2.13 :iceberg-spark:iceberg-spark-runtime-3.3_2.13:shadowJar -x test -x integrationTest
 
 # copy the fat jar to monorepo 
-cp /Users/shangx/code/iceberg_private/iceberg/spark/v3.3/spark-runtime/build/libs/iceberg-spark-runtime-3.3_2.12-1.9.0-SNAPSHOT.jar /Users/shangx/code/fievel/3rdparty/jvm/org/apache/iceberg/iceberg-runtime.jar
+cp /Users/shangx/code/iceberg_private/iceberg/spark/v3.3/spark-runtime/build/libs/iceberg-spark-runtime-3.3_2.12-1.9.0-SNAPSHOT.jar /Users/shangx/code/fievel/3rdparty/jvm/org/apache/iceberg/iceberg-spark-runtime.3.3_2.12_1.8.1_uber.jar
