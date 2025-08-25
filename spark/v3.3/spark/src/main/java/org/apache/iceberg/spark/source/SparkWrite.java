@@ -41,9 +41,6 @@ import org.apache.iceberg.Schema;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.SnapshotSummary;
 import org.apache.iceberg.SnapshotUpdate;
-import org.apache.iceberg.DataFile;
-import org.apache.iceberg.ManifestFile;
-import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.exceptions.CleanableFailure;
 import org.apache.iceberg.expressions.Expression;
@@ -250,16 +247,17 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
       
       // Count unique partitions if available
       Set<String> partitionsWritten = new HashSet<>();
-      if (currentSnapshot.addedDataFiles(table.io()) != null) {
-        try (CloseableIterable<DataFile> addedDataFiles = currentSnapshot.addedDataFiles(table.io())) {
+      try {
+        Iterable<DataFile> addedDataFiles = currentSnapshot.addedDataFiles(table.io());
+        if (addedDataFiles != null) {
           for (DataFile file : addedDataFiles) {
             if (file.partition() != null) {
               partitionsWritten.add(file.partition().toString());
             }
           }
-        } catch (Exception e) {
-          LOG.debug("Citrus-Iceberg: Could not determine partitions written: {}", e.getMessage());
         }
+      } catch (Exception e) {
+        LOG.debug("Citrus-Iceberg: Could not determine partitions written: {}", e.getMessage());
       }
       
       if (!partitionsWritten.isEmpty()) {
