@@ -23,8 +23,10 @@ import static org.apache.iceberg.IsolationLevel.SNAPSHOT;
 
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 import org.apache.iceberg.AppendFiles;
 import org.apache.iceberg.DataFile;
@@ -39,6 +41,9 @@ import org.apache.iceberg.Schema;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.SnapshotSummary;
 import org.apache.iceberg.SnapshotUpdate;
+import org.apache.iceberg.DataFile;
+import org.apache.iceberg.ManifestFile;
+import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.exceptions.CleanableFailure;
 import org.apache.iceberg.expressions.Expression;
@@ -186,6 +191,104 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
         partitionedFanoutEnabled);
   }
 
+  private void logCommitMetadata() {
+    try {
+      // Refresh table to get latest snapshot
+      table.refresh();
+      Snapshot currentSnapshot = table.currentSnapshot();
+      
+      if (currentSnapshot == null) {
+        LOG.warn("Citrus-Iceberg: No current snapshot available after commit");
+        return;
+      }
+      
+      LOG.info("Citrus-Iceberg: ========================================");
+      LOG.info("Citrus-Iceberg: COMMIT METADATA INFORMATION");
+      LOG.info("Citrus-Iceberg: ========================================");
+      
+      // Snapshot information
+      LOG.info("Citrus-Iceberg: Snapshot ID: {}", currentSnapshot.snapshotId());
+      LOG.info("Citrus-Iceberg: Snapshot Timestamp: {}", currentSnapshot.timestampMillis());
+      
+      // Get summary information from snapshot
+      Map<String, String> summary = currentSnapshot.summary();
+      
+      // Files information
+      String addedFiles = summary.getOrDefault("added-files", "0");
+      String deletedFiles = summary.getOrDefault("deleted-files", "0");
+      String totalFiles = summary.getOrDefault("total-files", "0");
+      String addedDataFilesSizeBytes = summary.getOrDefault("added-data-files-size", "0");
+      String totalDataFilesSizeBytes = summary.getOrDefault("total-data-files-size", "0");
+      
+      long addedFilesSize = Long.parseLong(addedDataFilesSizeBytes);
+      long totalFilesSize = Long.parseLong(totalDataFilesSizeBytes);
+      
+      LOG.info("Citrus-Iceberg: ----------------------------------------");
+      LOG.info("Citrus-Iceberg: FILES INFORMATION");
+      LOG.info("Citrus-Iceberg: ----------------------------------------");
+      LOG.info("Citrus-Iceberg: Files Added: {} ({} GB)", 
+               addedFiles, String.format("%.2f", addedFilesSize / (1024.0 * 1024.0 * 1024.0)));
+      LOG.info("Citrus-Iceberg: Files Deleted: {}", deletedFiles);
+      LOG.info("Citrus-Iceberg: Total Files: {} ({} GB)", 
+               totalFiles, String.format("%.2f", totalFilesSize / (1024.0 * 1024.0 * 1024.0)));
+      
+      // Records information
+      String addedRecords = summary.getOrDefault("added-records", "0");
+      String deletedRecords = summary.getOrDefault("deleted-records", "0");
+      String totalRecords = summary.getOrDefault("total-records", "0");
+      
+      LOG.info("Citrus-Iceberg: ----------------------------------------");
+      LOG.info("Citrus-Iceberg: RECORDS INFORMATION");
+      LOG.info("Citrus-Iceberg: ----------------------------------------");
+      LOG.info("Citrus-Iceberg: Records Added: {}", formatNumber(Long.parseLong(addedRecords)));
+      LOG.info("Citrus-Iceberg: Records Deleted: {}", formatNumber(Long.parseLong(deletedRecords)));
+      LOG.info("Citrus-Iceberg: Total Records: {}", formatNumber(Long.parseLong(totalRecords)));
+      
+      // Partition information
+      String addedPositionDeletes = summary.getOrDefault("added-position-deletes", "0");
+      String addedEqualityDeletes = summary.getOrDefault("added-equality-deletes", "0");
+      
+      // Count unique partitions if available
+      Set<String> partitionsWritten = new HashSet<>();
+      if (currentSnapshot.addedDataFiles(table.io()) != null) {
+        try (CloseableIterable<DataFile> addedDataFiles = currentSnapshot.addedDataFiles(table.io())) {
+          for (DataFile file : addedDataFiles) {
+            if (file.partition() != null) {
+              partitionsWritten.add(file.partition().toString());
+            }
+          }
+        } catch (Exception e) {
+          LOG.debug("Citrus-Iceberg: Could not determine partitions written: {}", e.getMessage());
+        }
+      }
+      
+      if (!partitionsWritten.isEmpty()) {
+        LOG.info("Citrus-Iceberg: Partitions Written: {}", partitionsWritten.size());
+      }
+      
+      // Operation type
+      String operation = currentSnapshot.operation();
+      LOG.info("Citrus-Iceberg: Operation Type: {}", operation);
+      
+      // Additional metadata
+      if (!addedPositionDeletes.equals("0")) {
+        LOG.info("Citrus-Iceberg: Position Deletes Added: {}", addedPositionDeletes);
+      }
+      if (!addedEqualityDeletes.equals("0")) {
+        LOG.info("Citrus-Iceberg: Equality Deletes Added: {}", addedEqualityDeletes);
+      }
+      
+      LOG.info("Citrus-Iceberg: ========================================");
+      
+    } catch (Exception e) {
+      LOG.warn("Citrus-Iceberg: Failed to log commit metadata: {}", e.getMessage());
+    }
+  }
+  
+  private String formatNumber(long number) {
+    return String.format("%,d", number);
+  }
+
   private void commitOperation(SnapshotUpdate<?> operation, String description) {
     long startTime = System.currentTimeMillis();
     LOG.info("Citrus-Iceberg: Starting commit operation: {} to table {}", description, table);
@@ -217,6 +320,10 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
       operation.commit(); // abort is automatically called if this fails
       long commitDuration = System.currentTimeMillis() - commitStart;
       long totalDuration = System.currentTimeMillis() - startTime;
+      
+      // Log detailed metadata information after successful commit
+      logCommitMetadata();
+      
       LOG.info("Citrus-Iceberg: Commit operation completed - commit took {} ms, total {} ms", 
                commitDuration, totalDuration);
     } catch (Exception e) {

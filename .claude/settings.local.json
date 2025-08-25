@@ -18,7 +18,11 @@
       "Bash(echo \"sparkVersions property: $sparkVersions\")",
       "Bash(jar tf:*)",
       "Read(//Users/shangx/code/fievel/**)",
-      "Bash(chmod:*)"
+      "Bash(chmod:*)",
+      "Bash(python3:*)",
+      "Read(//Users/shangx/code/iceberg_private/**)",
+      "Read(//Users/shangx/code/iceberg_private/**)",
+      "Bash(grep:*)"
     ],
     "deny": []
   }
