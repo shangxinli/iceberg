@@ -98,7 +98,8 @@ enum Timestamps implements Transform<Long, Integer> {
 
   private final ChronoUnit granularity;
   private final String name;
-  private final Apply apply;
+  @SuppressWarnings("ImmutableEnumChecker")
+  private final SerializableFunction<Long, Integer> apply;
 
   Timestamps(ChronoUnit granularity, String name, TimestampUnit timestampUnit) {
     this.name = name;

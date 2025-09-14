@@ -263,6 +263,7 @@ public class DynConstructors {
     return exc;
   }
 
+  @SuppressWarnings("SafeLoggingPropagation")
   private static String formatProblems(Map<String, Throwable> problems) {
     StringBuilder sb = new StringBuilder();
     boolean first = true;

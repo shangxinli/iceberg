@@ -39,6 +39,7 @@ import org.apache.iceberg.exceptions.CleanableFailure;
 import org.apache.iceberg.exceptions.CommitFailedException;
 import org.apache.iceberg.exceptions.CommitStateUnknownException;
 import org.apache.iceberg.exceptions.NoSuchTableException;
+import org.apache.iceberg.hadoop.HadoopFileIO;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.LocationProvider;
 import org.apache.iceberg.metrics.LoggingMetricsReporter;
@@ -48,6 +49,7 @@ import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
+import org.apache.iceberg.replication.ReplicationServiceFactory;
 import org.apache.iceberg.util.PropertyUtil;
 import org.apache.iceberg.util.Tasks;
 import org.slf4j.Logger;
@@ -319,6 +321,21 @@ public class BaseTransaction implements Transaction {
         commitSimpleTransaction();
         break;
     }
+
+    // Emit transaction metrics after successful commit
+    emitTransactionMetrics();
+
+    // Trigger replication if enabled
+    triggerReplication();
+
+  } catch (Exception e) {
+    // Still try to emit failure metrics
+    try {
+      emitTransactionMetrics();
+    } catch (Exception metricsError) {
+      LOG.warn("Failed to emit transaction failure metrics", metricsError);
+    }
+    throw e;
   }
 
   private void commitCreateTransaction() {
@@ -819,6 +836,93 @@ public class BaseTransaction implements Transaction {
     return deletedFiles;
   }
 
+  /**
+   * Emits transaction metrics to M3 after transaction completion.
+   */
+  private void emitTransactionMetrics() {
+    if (metricsEmitter == null) {
+      return;
+    }
+
+    try {
+      long durationMs = System.currentTimeMillis() - transactionStartTime;
+
+      // Calculate record and file counts from snapshots
+      long recordsInserted = 0;
+      long recordsDeleted = 0;
+      long filesAdded = 0;
+      long filesRemoved = 0;
+
+      // Get current snapshot if it exists
+      if (current != null && current.currentSnapshot() != null) {
+        Snapshot currentSnapshot = current.currentSnapshot();
+        Map<String, String> summary = currentSnapshot.summary();
+
+        if (summary != null) {
+          try {
+            String addedRecords = summary.get("added-records");
+            if (addedRecords != null) {
+              recordsInserted = Long.parseLong(addedRecords);
+            }
+
+            String deletedRecords = summary.get("deleted-records");
+            if (deletedRecords != null) {
+              recordsDeleted = Long.parseLong(deletedRecords);
+            }
+
+            String addedFiles = summary.get("added-data-files");
+            if (addedFiles != null) {
+              filesAdded = Long.parseLong(addedFiles);
+            }
+
+            String removedFiles = summary.get("removed-data-files");
+            if (removedFiles != null) {
+              filesRemoved = Long.parseLong(removedFiles);
+            }
+          } catch (NumberFormatException e) {
+            LOG.debug("Failed to parse snapshot summary metrics", e);
+          }
+        }
+      }
+
+      // Emit transaction metrics
+      metricsEmitter.emitTransactionMetrics(
+          recordsInserted,
+          recordsDeleted,
+          filesAdded,
+          filesRemoved,
+          durationMs
+      );
+
+      LOG.debug("Emitted transaction metrics for table: {}, operation: {}, duration: {}ms",
+          tableName, type, durationMs);
+
+    } catch (Exception e) {
+      LOG.warn("Failed to emit transaction metrics", e);
+    } finally {
+      if (scope != null) {
+        try {
+          scope.close();
+        } catch (Exception e) {
+          LOG.debug("Failed to close metrics scope", e);
+        }
+      }
+    }
+  }
+
+  /**
+   * Trigger replication after successful transaction commit.
+   * This method is designed to NEVER fail the main transaction, even in synchronous mode.
+   */
+  private void triggerReplication() {
+    try {
+      ReplicationServiceFactory.getInstance()
+          .triggerReplication(transactionTable, current.properties(), tableName);
+    } catch (Throwable e) {
+      // Ultimate safety net - catch ALL possible exceptions/errors
+      LOG.error("Replication failed for table: {}, but primary transaction succeeded", tableName, e);
+    }
+  }
   /**
    * Exception used to avoid retrying {@link PendingUpdate} when it is failed with {@link
    * CommitFailedException}.

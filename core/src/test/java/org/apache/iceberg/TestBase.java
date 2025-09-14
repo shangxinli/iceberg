@@ -65,14 +65,14 @@ public class TestBase {
   public static final PartitionSpec SPEC =
       PartitionSpec.builderFor(SCHEMA).bucket("data", BUCKETS_NUMBER).build();
 
-  static final DataFile FILE_A =
+  public static final DataFile FILE_A =
       DataFiles.builder(SPEC)
           .withPath("/path/to/data-a.parquet")
           .withFileSizeInBytes(10)
           .withPartitionPath("data_bucket=0") // easy way to set partition data for now
           .withRecordCount(1)
           .build();
-  static final DataFile FILE_A2 =
+  public static final DataFile FILE_A2 =
       DataFiles.builder(SPEC)
           .withPath("/path/to/data-a-2.parquet")
           .withFileSizeInBytes(10)
@@ -107,7 +107,7 @@ public class TestBase {
           .withPartitionPath("data_bucket=0")
           .withRecordCount(1)
           .build();
-  static final DataFile FILE_B =
+  public static final DataFile FILE_B =
       DataFiles.builder(SPEC)
           .withPath("/path/to/data-b.parquet")
           .withFileSizeInBytes(10)
@@ -134,7 +134,7 @@ public class TestBase {
           .withContentOffset(4)
           .withContentSizeInBytes(6)
           .build();
-  static final DataFile FILE_C =
+  public static final DataFile FILE_C =
       DataFiles.builder(SPEC)
           .withPath("/path/to/data-c.parquet")
           .withFileSizeInBytes(10)

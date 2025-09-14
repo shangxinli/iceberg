@@ -391,4 +391,57 @@ public class TableProperties {
   public static final int ENCRYPTION_DEK_LENGTH_DEFAULT = 16;
 
   public static final int ENCRYPTION_AAD_LENGTH_DEFAULT = 16;
+
+  public static final String ROW_LINEAGE = "row-lineage";
+
+  // Cross-DC replication properties
+  public static final String REPLICATION_ENABLED = "write.replication.enabled";
+  public static final String REPLICATION_ENABLED_DEFAULT = "false";
+
+  // Multi-DC targets support: comma-separated list of target paths
+  public static final String REPLICATION_TARGETS = "write.replication.targets";
+
+  // Legacy single target support for backward compatibility
+  @Deprecated
+  public static final String REPLICATION_TARGET = "write.replication.target";
+
+  // Per-target configuration support (e.g., write.replication.target.dc1.path, write.replication.target.dc1.mode)
+  public static final String REPLICATION_TARGET_PREFIX = "write.replication.target.";
+  public static final String REPLICATION_TARGET_PATH_SUFFIX = ".path";
+  public static final String REPLICATION_TARGET_MODE_SUFFIX = ".mode";
+  public static final String REPLICATION_TARGET_PRIORITY_SUFFIX = ".priority";
+  public static final String REPLICATION_TARGET_ENABLED_SUFFIX = ".enabled";
+
+  public static final String REPLICATION_MODE = "write.replication.mode";
+  public static final String REPLICATION_MODE_ASYNC = "async";
+  public static final String REPLICATION_MODE_SYNC = "sync";
+  public static final String REPLICATION_MODE_DEFAULT = REPLICATION_MODE_ASYNC;
+
+  // Global replication behavior settings
+  public static final String REPLICATION_STRATEGY = "write.replication.strategy";
+  public static final String REPLICATION_STRATEGY_ALL = "all";           // Replicate to all targets
+  public static final String REPLICATION_STRATEGY_PRIORITY = "priority"; // Replicate by priority order
+  public static final String REPLICATION_STRATEGY_ANY = "any";           // Succeed if any target succeeds
+  public static final String REPLICATION_STRATEGY_DEFAULT = REPLICATION_STRATEGY_ALL;
+
+  public static final String REPLICATION_MAX_RETRIES = "write.replication.max-retries";
+  public static final String REPLICATION_MAX_RETRIES_DEFAULT = "3";
+
+  public static final String REPLICATION_BATCH_SIZE = "write.replication.batch-size";
+  public static final String REPLICATION_BATCH_SIZE_DEFAULT = "10";
+
+  public static final String REPLICATION_TIMEOUT_MS = "write.replication.timeout-ms";
+  public static final long REPLICATION_TIMEOUT_MS_DEFAULT = 300000L; // 5 minutes
+
+  public static final String REPLICATION_THREAD_POOL_SIZE = "write.replication.thread-pool-size";
+  public static final String REPLICATION_THREAD_POOL_SIZE_DEFAULT = "4";
+
+  public static final String REPLICATION_CHECKSUM_ENABLED = "write.replication.checksum.enabled";
+  public static final String REPLICATION_CHECKSUM_ENABLED_DEFAULT = "true";
+
+  // Multi-DC failure handling
+  public static final String REPLICATION_PARTIAL_FAILURE_POLICY = "write.replication.partial-failure-policy";
+  public static final String REPLICATION_PARTIAL_FAILURE_POLICY_CONTINUE = "continue"; // Continue with successful targets
+  public static final String REPLICATION_PARTIAL_FAILURE_POLICY_FAIL = "fail";         // Fail if any target fails
+  public static final String REPLICATION_PARTIAL_FAILURE_POLICY_DEFAULT = REPLICATION_PARTIAL_FAILURE_POLICY_CONTINUE;
 }
