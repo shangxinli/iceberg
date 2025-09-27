@@ -35,6 +35,7 @@ import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Multimap;
@@ -49,6 +50,11 @@ import org.slf4j.LoggerFactory;
 
 public abstract class DeleteFilter<T> {
   private static final Logger LOG = LoggerFactory.getLogger(DeleteFilter.class);
+
+  // Map of all metadata column field IDs to their NestedField definitions
+  private static final Map<Integer, Types.NestedField> METADATA_COLUMNS_BY_ID =
+      MetadataColumns.metadataColumns().stream()
+          .collect(ImmutableMap.toImmutableMap(Types.NestedField::fieldId, field -> field));
 
   private final String filePath;
   private final List<DeleteFile> posDeletes;
@@ -291,29 +297,55 @@ public abstract class DeleteFilter<T> {
       return requestedSchema;
     }
 
-    // TODO: support adding nested columns. this will currently fail when finding nested columns to
-    // add
-    List<Types.NestedField> columns = Lists.newArrayList(requestedSchema.columns());
+    // Separate missing IDs into data and metadata columns
+    Set<Integer> missingDataIds = Sets.newLinkedHashSet();
+    Set<Integer> missingMetadataIds = Sets.newLinkedHashSet();
     for (int fieldId : missingIds) {
-      if (fieldId == MetadataColumns.ROW_POSITION.fieldId()
-          || fieldId == MetadataColumns.IS_DELETED.fieldId()) {
-        continue; // add _pos and _deleted at the end
+      if (MetadataColumns.isMetadataColumn(fieldId)) {
+        missingMetadataIds.add(fieldId);
+      } else {
+        missingDataIds.add(fieldId);
+      }
+    }
+
+    // Build column names list: requested columns + missing data columns
+    // Use Schema.select() to preserve nested structure
+    List<String> columnNames = Lists.newArrayList();
+
+    // Add requested column names first (preserves order)
+    for (Types.NestedField field : requestedSchema.columns()) {
+      String columnName = requestedSchema.findColumnName(field.fieldId());
+      Preconditions.checkArgument(
+          columnName != null, "Cannot find column name for field ID %s", field.fieldId());
+      columnNames.add(columnName);
+    }
+
+    // Add missing data column names
+    for (int fieldId : missingDataIds) {
+      String columnName = tableSchema.findColumnName(fieldId);
+      Preconditions.checkArgument(
+          columnName != null, "Cannot find column name for field ID %s", fieldId);
+      columnNames.add(columnName);
+    }
+
+    // Use Schema.select() to build a schema with preserved nested structure
+    Schema projectedSchema = tableSchema.select(columnNames);
+
+    // Add metadata columns (they don't exist in tableSchema, so add them separately)
+    if (!missingMetadataIds.isEmpty()) {
+      List<Types.NestedField> columnsWithMetadata = Lists.newArrayList();
+      columnsWithMetadata.addAll(projectedSchema.columns());
+
+      for (int fieldId : missingMetadataIds) {
+        Types.NestedField metadataColumn = METADATA_COLUMNS_BY_ID.get(fieldId);
+        Preconditions.checkArgument(
+            metadataColumn != null, "Cannot find metadata column for ID %s", fieldId);
+        columnsWithMetadata.add(metadataColumn);
       }
 
-      Types.NestedField field = tableSchema.asStruct().field(fieldId);
-      Preconditions.checkArgument(field != null, "Cannot find required field for ID %s", fieldId);
-
-      columns.add(field);
+      return new Schema(columnsWithMetadata);
     }
 
-    if (missingIds.contains(MetadataColumns.ROW_POSITION.fieldId())) {
-      columns.add(MetadataColumns.ROW_POSITION);
-    }
-
-    if (missingIds.contains(MetadataColumns.IS_DELETED.fieldId())) {
-      columns.add(MetadataColumns.IS_DELETED);
-    }
-
-    return new Schema(columns);
+    return projectedSchema;
   }
 }
