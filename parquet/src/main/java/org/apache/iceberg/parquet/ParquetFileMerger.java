@@ -19,14 +19,29 @@
 package org.apache.iceberg.parquet;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import org.apache.iceberg.MetadataColumns;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
+import org.apache.iceberg.io.SeekableInputStream;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
+import org.apache.parquet.bytes.BytesInput;
+import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.column.ParquetProperties;
+import org.apache.parquet.column.statistics.LongStatistics;
+import org.apache.parquet.hadoop.ParquetFileReader;
 import org.apache.parquet.hadoop.ParquetFileWriter;
+import org.apache.parquet.hadoop.metadata.BlockMetaData;
+import org.apache.parquet.hadoop.metadata.ColumnChunkMetaData;
+import org.apache.parquet.hadoop.metadata.CompressionCodecName;
 import org.apache.parquet.schema.MessageType;
+import org.apache.parquet.schema.PrimitiveType;
+import org.apache.parquet.schema.Type;
+import org.apache.parquet.schema.Types;
 
 /**
  * Utility class for performing strict schema validation and merging of Parquet files at the
@@ -204,5 +219,221 @@ public class ParquetFileMerger {
     } catch (IllegalArgumentException | IOException e) {
       return false;
     }
+  }
+
+  /**
+   * Checks if Parquet files already contain a physical _row_id column in their schema.
+   *
+   * @param inputFiles List of Iceberg input files to check
+   * @return true if files already have physical _row_id column, false otherwise
+   */
+  public static boolean hasPhysicalRowIdColumn(List<InputFile> inputFiles) {
+    try {
+      if (inputFiles == null || inputFiles.isEmpty()) {
+        return false;
+      }
+
+      // Check the first file's schema
+      org.apache.parquet.io.InputFile parquetFile = ParquetIO.file(inputFiles.get(0));
+      MessageType schema =
+          org.apache.parquet.hadoop.ParquetFileReader.open(parquetFile)
+              .getFooter()
+              .getFileMetaData()
+              .getSchema();
+
+      // Check if schema contains _row_id column
+      return schema.containsField(MetadataColumns.ROW_ID.name());
+    } catch (IllegalArgumentException | IOException e) {
+      return false;
+    }
+  }
+
+  /**
+   * Merges multiple Parquet files while adding a _row_id metadata column to preserve row lineage.
+   *
+   * <p>This method performs row-group level merging with two operations: 1. Binary copy of existing
+   * column chunks (no deserialization) 2. Generation of new _row_id column chunk with encoded row
+   * IDs
+   *
+   * <p>This approach is inspired by Apache Hudi's binary copy implementation for metadata columns.
+   *
+   * @param inputFiles List of Iceberg input files to merge
+   * @param outputFile Iceberg output file for the merged result
+   * @param firstRowIds List of starting row IDs for each input file (must match inputFiles length)
+   * @param rowGroupSize Target row group size in bytes
+   * @param columnIndexTruncateLength Maximum length for min/max values in column index
+   * @param extraMetadata Additional metadata to include in the output file footer (can be null)
+   * @throws IOException if I/O error occurs during merge operation
+   * @throws IllegalArgumentException if no input files provided or parameters invalid
+   */
+  public static void mergeFilesWithRowIds(
+      List<InputFile> inputFiles,
+      OutputFile outputFile,
+      List<Long> firstRowIds,
+      long rowGroupSize,
+      int columnIndexTruncateLength,
+      Map<String, String> extraMetadata)
+      throws IOException {
+    Preconditions.checkArgument(
+        inputFiles != null && !inputFiles.isEmpty(), "No input files provided for merging");
+    Preconditions.checkArgument(
+        firstRowIds != null && firstRowIds.size() == inputFiles.size(),
+        "firstRowIds must be provided for each input file");
+
+    // Read base schema from first file
+    org.apache.parquet.io.InputFile firstParquetFile = ParquetIO.file(inputFiles.get(0));
+    MessageType baseSchema =
+        ParquetFileReader.open(firstParquetFile).getFooter().getFileMetaData().getSchema();
+
+    // Extend schema to include _row_id column
+    MessageType extendedSchema = addRowIdColumn(baseSchema);
+
+    // Create output writer with extended schema
+    org.apache.parquet.io.OutputFile parquetOutputFile = ParquetIO.file(outputFile);
+    try (ParquetFileWriter writer =
+        new ParquetFileWriter(
+            parquetOutputFile,
+            extendedSchema,
+            ParquetFileWriter.Mode.CREATE,
+            rowGroupSize,
+            0,
+            columnIndexTruncateLength,
+            ParquetProperties.DEFAULT_STATISTICS_TRUNCATE_LENGTH,
+            ParquetProperties.DEFAULT_PAGE_WRITE_CHECKSUM_ENABLED)) {
+
+      writer.start();
+
+      // Get _row_id column descriptor from extended schema
+      ColumnDescriptor rowIdDescriptor =
+          extendedSchema.getColumnDescription(new String[] {MetadataColumns.ROW_ID.name()});
+
+      // Process each input file
+      for (int fileIdx = 0; fileIdx < inputFiles.size(); fileIdx++) {
+        InputFile inputFile = inputFiles.get(fileIdx);
+        long currentRowId = firstRowIds.get(fileIdx);
+
+        org.apache.parquet.io.InputFile parquetInputFile = ParquetIO.file(inputFile);
+        try (ParquetFileReader reader = ParquetFileReader.open(parquetInputFile)) {
+          List<BlockMetaData> rowGroups = reader.getFooter().getBlocks();
+
+          for (BlockMetaData rowGroup : rowGroups) {
+            long rowCount = rowGroup.getRowCount();
+
+            // Start new row group in output
+            writer.startBlock(rowCount);
+
+            // Copy all existing column chunks (binary copy)
+            try (SeekableInputStream icebergStream = inputFile.newStream()) {
+              // Wrap Iceberg stream as Parquet stream
+              org.apache.parquet.io.SeekableInputStream parquetStream =
+                  new org.apache.parquet.io.DelegatingSeekableInputStream(icebergStream) {
+                    @Override
+                    public long getPos() throws IOException {
+                      return icebergStream.getPos();
+                    }
+
+                    @Override
+                    public void seek(long newPos) throws IOException {
+                      icebergStream.seek(newPos);
+                    }
+                  };
+
+              for (ColumnChunkMetaData columnChunk : rowGroup.getColumns()) {
+                ColumnDescriptor columnDescriptor =
+                    baseSchema.getColumnDescription(columnChunk.getPath().toArray());
+                writer.appendColumnChunk(
+                    columnDescriptor,
+                    parquetStream,
+                    columnChunk,
+                    null, // bloomFilter
+                    null, // columnIndex
+                    null); // offsetIndex
+              }
+            }
+
+            // Write new _row_id column chunk
+            writeRowIdColumnChunk(writer, rowIdDescriptor, currentRowId, rowCount);
+
+            currentRowId += rowCount;
+            writer.endBlock();
+          }
+        }
+      }
+
+      // Finish writing
+      if (extraMetadata != null && !extraMetadata.isEmpty()) {
+        writer.end(extraMetadata);
+      } else {
+        writer.end(java.util.Collections.emptyMap());
+      }
+    }
+  }
+
+  /**
+   * Extends a Parquet schema by adding the _row_id metadata column.
+   *
+   * @param baseSchema Original Parquet schema
+   * @return Extended schema with _row_id column added
+   */
+  private static MessageType addRowIdColumn(MessageType baseSchema) {
+    // Create _row_id column: required int64 (no logical type annotation)
+    PrimitiveType rowIdType =
+        Types.required(PrimitiveType.PrimitiveTypeName.INT64).named(MetadataColumns.ROW_ID.name());
+
+    // Add to existing fields
+    List<Type> fields = new ArrayList<>(baseSchema.getFields());
+    fields.add(rowIdType);
+
+    return new MessageType(baseSchema.getName(), fields);
+  }
+
+  /**
+   * Writes a _row_id column chunk with sequential row IDs.
+   *
+   * <p>Uses PLAIN encoding and DataPageV2 format for simplicity. Each row ID is encoded as an
+   * 8-byte little-endian long value.
+   *
+   * @param writer ParquetFileWriter to write to
+   * @param rowIdDescriptor Column descriptor for _row_id
+   * @param startRowId Starting row ID for this row group
+   * @param rowCount Number of rows in this row group
+   * @throws IOException if writing fails
+   */
+  private static void writeRowIdColumnChunk(
+      ParquetFileWriter writer, ColumnDescriptor rowIdDescriptor, long startRowId, long rowCount)
+      throws IOException {
+
+    // Start the column chunk
+    writer.startColumn(rowIdDescriptor, rowCount, CompressionCodecName.UNCOMPRESSED);
+
+    // Encode row IDs as PLAIN encoding (8 bytes per long, little-endian)
+    int dataSize = (int) (rowCount * 8);
+    ByteBuffer buffer = ByteBuffer.allocate(dataSize).order(ByteOrder.LITTLE_ENDIAN);
+
+    for (long i = 0; i < rowCount; i++) {
+      buffer.putLong(startRowId + i);
+    }
+
+    buffer.flip();
+    BytesInput dataInput = BytesInput.from(buffer);
+
+    // Create statistics for the column
+    LongStatistics stats = new LongStatistics();
+    stats.setMinMax(startRowId, startRowId + rowCount - 1);
+    stats.setNumNulls(0);
+
+    // Write data page using PLAIN encoding
+    // For required column (no nulls), we don't need repetition/definition level encoding
+    writer.writeDataPage(
+        (int) rowCount, // valueCount
+        dataSize, // uncompressedSize
+        dataInput, // bytes
+        stats, // statistics
+        org.apache.parquet.column.Encoding.BIT_PACKED, // rlEncoding (not used for required)
+        org.apache.parquet.column.Encoding.BIT_PACKED, // dlEncoding (not used for required)
+        org.apache.parquet.column.Encoding.PLAIN); // valuesEncoding
+
+    // End the column chunk
+    writer.endColumn();
   }
 }

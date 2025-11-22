@@ -188,6 +188,9 @@ public class SparkParquetFileMergeRunner extends SparkBinPackFileRewriteRunner {
         expectedOutputFiles,
         groupId);
 
+    // Check if table supports row lineage
+    boolean preserveRowLineage = org.apache.iceberg.TableUtil.supportsRowLineage(table());
+
     // Distribute files evenly across expected output files (planner already determined the count)
     List<List<DataFile>> fileBatches =
         distributeFilesEvenly(group.rewrittenFiles(), expectedOutputFiles);
@@ -210,9 +213,27 @@ public class SparkParquetFileMergeRunner extends SparkBinPackFileRewriteRunner {
       String taskId = String.format("%s-%d", groupId, batchIndex++);
       List<String> filePaths =
           batch.stream().map(f -> f.path().toString()).collect(Collectors.toList());
+
+      // Extract firstRowIds for row lineage preservation
+      List<Long> firstRowIds = null;
+      if (preserveRowLineage) {
+        firstRowIds = batch.stream().map(DataFile::firstRowId).collect(Collectors.toList());
+        LOG.debug(
+            "Task {} will preserve row lineage with firstRowIds: {} (group: {})",
+            taskId,
+            firstRowIds,
+            groupId);
+      }
+
       mergeTasks.add(
           new MergeTaskInfo(
-              taskId, filePaths, spec, partition, rowGroupSize, columnIndexTruncateLength));
+              taskId,
+              filePaths,
+              spec,
+              partition,
+              rowGroupSize,
+              columnIndexTruncateLength,
+              firstRowIds));
     }
 
     // Get FileIO for executors - table().io() is serializable
@@ -231,16 +252,21 @@ public class SparkParquetFileMergeRunner extends SparkBinPackFileRewriteRunner {
       Metrics metrics =
           ParquetUtil.fileMetrics(table().io().newInputFile(mergeResult.getPath()), metricsConfig);
 
-      DataFile resultFile =
+      org.apache.iceberg.DataFiles.Builder builder =
           org.apache.iceberg.DataFiles.builder(mergeResult.getSpec())
               .withPath(mergeResult.getPath())
               .withFormat(FileFormat.PARQUET)
               .withPartition(mergeResult.getPartition())
               .withFileSizeInBytes(mergeResult.getFileSize())
-              .withMetrics(metrics)
-              .build();
+              .withMetrics(metrics);
 
-      newFiles.add(resultFile);
+      // If row lineage was preserved via physical _row_id column, set first_row_id to null
+      // (row IDs are now in the data, not calculated from metadata)
+      if (mergeResult.hasPhysicalRowIds()) {
+        builder.withFirstRowId(null);
+      }
+
+      newFiles.add(builder.build());
     }
 
     // Register merged files with coordinator
@@ -297,15 +323,49 @@ public class SparkParquetFileMergeRunner extends SparkBinPackFileRewriteRunner {
     // Create output file using Iceberg FileIO
     org.apache.iceberg.io.OutputFile outputFile = fileIO.newOutputFile(outputPath);
 
-    // Merge files using FileIO-based static method with configuration from table/Hadoop properties
-    ParquetFileMerger.mergeFiles(
-        inputFiles, outputFile, task.getRowGroupSize(), task.getColumnIndexTruncateLength(), null);
+    // Determine merge strategy based on whether files already have physical _row_id column
+    boolean shouldPreserveLineage =
+        task.getFirstRowIds() != null && !task.getFirstRowIds().isEmpty();
+    boolean hasPhysicalRowIds = false;
+
+    if (shouldPreserveLineage) {
+      // Check if input files already have physical _row_id column
+      if (ParquetFileMerger.hasPhysicalRowIdColumn(inputFiles)) {
+        // Files already have physical _row_id - use simple binary copy (fast!)
+        ParquetFileMerger.mergeFiles(
+            inputFiles,
+            outputFile,
+            task.getRowGroupSize(),
+            task.getColumnIndexTruncateLength(),
+            null);
+        hasPhysicalRowIds = true; // Output will have physical _row_id from input
+      } else {
+        // Files have virtual _row_id (metadata-based) - synthesize physical column
+        ParquetFileMerger.mergeFilesWithRowIds(
+            inputFiles,
+            outputFile,
+            task.getFirstRowIds(),
+            task.getRowGroupSize(),
+            task.getColumnIndexTruncateLength(),
+            null);
+        hasPhysicalRowIds = true; // We just wrote physical _row_id
+      }
+    } else {
+      // No row lineage preservation needed - simple merge
+      ParquetFileMerger.mergeFiles(
+          inputFiles,
+          outputFile,
+          task.getRowGroupSize(),
+          task.getColumnIndexTruncateLength(),
+          null);
+    }
 
     // Get file size from the output file
     long fileSize = fileIO.newInputFile(outputPath).getLength();
 
     // Return lightweight metadata - driver will construct DataFile with metrics
-    return new MergeResult(outputPath, fileSize, task.getSpec(), task.getPartition());
+    return new MergeResult(
+        outputPath, fileSize, task.getSpec(), task.getPartition(), hasPhysicalRowIds);
   }
 
   /**
@@ -319,6 +379,7 @@ public class SparkParquetFileMergeRunner extends SparkBinPackFileRewriteRunner {
     private final StructLike partition;
     private final long rowGroupSize;
     private final int columnIndexTruncateLength;
+    private final List<Long> firstRowIds;
 
     MergeTaskInfo(
         String taskId,
@@ -326,13 +387,15 @@ public class SparkParquetFileMergeRunner extends SparkBinPackFileRewriteRunner {
         PartitionSpec spec,
         StructLike partition,
         long rowGroupSize,
-        int columnIndexTruncateLength) {
+        int columnIndexTruncateLength,
+        List<Long> firstRowIds) {
       this.taskId = taskId;
       this.filePaths = filePaths;
       this.spec = spec;
       this.partition = partition;
       this.rowGroupSize = rowGroupSize;
       this.columnIndexTruncateLength = columnIndexTruncateLength;
+      this.firstRowIds = firstRowIds;
     }
 
     String getTaskId() {
@@ -358,6 +421,10 @@ public class SparkParquetFileMergeRunner extends SparkBinPackFileRewriteRunner {
     StructLike getPartition() {
       return partition;
     }
+
+    List<Long> getFirstRowIds() {
+      return firstRowIds;
+    }
   }
 
   /**
@@ -369,12 +436,19 @@ public class SparkParquetFileMergeRunner extends SparkBinPackFileRewriteRunner {
     private final long fileSize;
     private final PartitionSpec spec;
     private final StructLike partition;
+    private final boolean hasPhysicalRowIds;
 
-    MergeResult(String path, long fileSize, PartitionSpec spec, StructLike partition) {
+    MergeResult(
+        String path,
+        long fileSize,
+        PartitionSpec spec,
+        StructLike partition,
+        boolean hasPhysicalRowIds) {
       this.path = path;
       this.fileSize = fileSize;
       this.spec = spec;
       this.partition = partition;
+      this.hasPhysicalRowIds = hasPhysicalRowIds;
     }
 
     String getPath() {
@@ -391,6 +465,10 @@ public class SparkParquetFileMergeRunner extends SparkBinPackFileRewriteRunner {
 
     StructLike getPartition() {
       return partition;
+    }
+
+    boolean hasPhysicalRowIds() {
+      return hasPhysicalRowIds;
     }
   }
 }
