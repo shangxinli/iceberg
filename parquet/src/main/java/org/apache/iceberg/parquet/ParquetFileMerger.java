@@ -18,6 +18,8 @@
  */
 package org.apache.iceberg.parquet;
 
+import static java.util.Collections.emptyMap;
+
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -142,10 +144,9 @@ public class ParquetFileMerger {
     }
 
     // Create the output Parquet file writer
-    org.apache.parquet.io.OutputFile parquetOutputFile = ParquetIO.file(outputFile);
     try (ParquetFileWriter writer =
         new ParquetFileWriter(
-            parquetOutputFile,
+            ParquetIO.file(outputFile),
             schema,
             ParquetFileWriter.Mode.CREATE,
             rowGroupSize,
@@ -165,7 +166,7 @@ public class ParquetFileMerger {
       if (extraMetadata != null && !extraMetadata.isEmpty()) {
         writer.end(extraMetadata);
       } else {
-        writer.end(java.util.Collections.emptyMap());
+        writer.end(emptyMap());
       }
     }
   }
@@ -210,8 +211,10 @@ public class ParquetFileMerger {
    * @throws IOException if reading fails
    */
   private static MessageType readSchema(InputFile inputFile) throws IOException {
-    org.apache.parquet.io.InputFile parquetFile = ParquetIO.file(inputFile);
-    return ParquetFileReader.open(parquetFile).getFooter().getFileMetaData().getSchema();
+    return ParquetFileReader.open(ParquetIO.file(inputFile))
+        .getFooter()
+        .getFileMetaData()
+        .getSchema();
   }
 
   /**
@@ -248,14 +251,13 @@ public class ParquetFileMerger {
       int columnIndexTruncateLength,
       Map<String, String> extraMetadata)
       throws IOException {
-    org.apache.parquet.io.OutputFile parquetOutputFile = ParquetIO.file(outputFile);
     try (ParquetFileWriter writer =
         new ParquetFileWriter(
-            parquetOutputFile,
+            ParquetIO.file(outputFile),
             schema,
             ParquetFileWriter.Mode.CREATE,
             rowGroupSize,
-            0,
+            0, // maxPaddingSize - hardcoded to 0 (same as ParquetWriter)
             columnIndexTruncateLength,
             ParquetProperties.DEFAULT_STATISTICS_TRUNCATE_LENGTH,
             ParquetProperties.DEFAULT_PAGE_WRITE_CHECKSUM_ENABLED)) {
@@ -267,7 +269,7 @@ public class ParquetFileMerger {
       if (extraMetadata != null && !extraMetadata.isEmpty()) {
         writer.end(extraMetadata);
       } else {
-        writer.end(java.util.Collections.emptyMap());
+        writer.end(emptyMap());
       }
     }
   }
@@ -286,14 +288,13 @@ public class ParquetFileMerger {
     MessageType extendedSchema = addRowIdColumn(baseSchema);
 
     // Create output writer with extended schema
-    org.apache.parquet.io.OutputFile parquetOutputFile = ParquetIO.file(outputFile);
     try (ParquetFileWriter writer =
         new ParquetFileWriter(
-            parquetOutputFile,
+            ParquetIO.file(outputFile),
             extendedSchema,
             ParquetFileWriter.Mode.CREATE,
             rowGroupSize,
-            0,
+            0, // maxPaddingSize - hardcoded to 0 (same as ParquetWriter)
             columnIndexTruncateLength,
             ParquetProperties.DEFAULT_STATISTICS_TRUNCATE_LENGTH,
             ParquetProperties.DEFAULT_PAGE_WRITE_CHECKSUM_ENABLED)) {
@@ -309,8 +310,7 @@ public class ParquetFileMerger {
         InputFile inputFile = inputFiles.get(fileIdx);
         long currentRowId = firstRowIds.get(fileIdx);
 
-        org.apache.parquet.io.InputFile parquetInputFile = ParquetIO.file(inputFile);
-        try (ParquetFileReader reader = ParquetFileReader.open(parquetInputFile)) {
+        try (ParquetFileReader reader = ParquetFileReader.open(ParquetIO.file(inputFile))) {
           List<BlockMetaData> rowGroups = reader.getFooter().getBlocks();
 
           for (BlockMetaData rowGroup : rowGroups) {
@@ -351,7 +351,7 @@ public class ParquetFileMerger {
       if (extraMetadata != null && !extraMetadata.isEmpty()) {
         writer.end(extraMetadata);
       } else {
-        writer.end(java.util.Collections.emptyMap());
+        writer.end(emptyMap());
       }
     }
   }
@@ -385,14 +385,14 @@ public class ParquetFileMerger {
       int columnIndexTruncateLength,
       Map<String, String> extraMetadata)
       throws IOException {
+    // Read schema once and validate all files
+    MessageType schema = readSchema(inputFiles.get(0));
+    validateSchemasMatch(inputFiles, schema);
+
     // Check if row lineage preservation is needed
     boolean shouldPreserveLineage = firstRowIds != null && !firstRowIds.isEmpty();
 
     if (shouldPreserveLineage) {
-      // Read schema once and validate all files (reuses validation logic from mergeFiles)
-      MessageType schema = readSchema(inputFiles.get(0));
-      validateSchemasMatch(inputFiles, schema);
-
       if (schema.containsField(MetadataColumns.ROW_ID.name())) {
         // Files already have physical _row_id - use simple binary copy (fastest!)
         mergeFilesWithSchema(
@@ -412,7 +412,8 @@ public class ParquetFileMerger {
       }
     } else {
       // No row lineage preservation - simple merge
-      mergeFiles(inputFiles, outputFile, rowGroupSize, columnIndexTruncateLength, extraMetadata);
+      mergeFilesWithSchema(
+          inputFiles, outputFile, schema, rowGroupSize, columnIndexTruncateLength, extraMetadata);
       return false; // No physical _row_id
     }
   }
@@ -456,14 +457,13 @@ public class ParquetFileMerger {
     MessageType extendedSchema = addRowIdColumn(baseSchema);
 
     // Create output writer with extended schema
-    org.apache.parquet.io.OutputFile parquetOutputFile = ParquetIO.file(outputFile);
     try (ParquetFileWriter writer =
         new ParquetFileWriter(
-            parquetOutputFile,
+            ParquetIO.file(outputFile),
             extendedSchema,
             ParquetFileWriter.Mode.CREATE,
             rowGroupSize,
-            0,
+            0, // maxPaddingSize - hardcoded to 0 (same as ParquetWriter)
             columnIndexTruncateLength,
             ParquetProperties.DEFAULT_STATISTICS_TRUNCATE_LENGTH,
             ParquetProperties.DEFAULT_PAGE_WRITE_CHECKSUM_ENABLED)) {
@@ -479,8 +479,7 @@ public class ParquetFileMerger {
         InputFile inputFile = inputFiles.get(fileIdx);
         long currentRowId = firstRowIds.get(fileIdx);
 
-        org.apache.parquet.io.InputFile parquetInputFile = ParquetIO.file(inputFile);
-        try (ParquetFileReader reader = ParquetFileReader.open(parquetInputFile)) {
+        try (ParquetFileReader reader = ParquetFileReader.open(ParquetIO.file(inputFile))) {
           List<BlockMetaData> rowGroups = reader.getFooter().getBlocks();
 
           for (BlockMetaData rowGroup : rowGroups) {
@@ -531,7 +530,7 @@ public class ParquetFileMerger {
       if (extraMetadata != null && !extraMetadata.isEmpty()) {
         writer.end(extraMetadata);
       } else {
-        writer.end(java.util.Collections.emptyMap());
+        writer.end(emptyMap());
       }
     }
   }
