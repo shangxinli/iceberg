@@ -29,7 +29,6 @@ import org.apache.iceberg.MetadataColumns;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.SeekableInputStream;
-import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.parquet.bytes.BytesInput;
 import org.apache.parquet.column.ColumnDescriptor;
@@ -100,99 +99,26 @@ public class ParquetFileMerger {
   }
 
   /**
-   * Merges multiple Parquet files into a single output file at the row-group level using Iceberg
-   * FileIO.
+   * Checks if a list of Iceberg InputFiles can be merged.
    *
-   * <p>This method works with any Iceberg FileIO implementation (S3FileIO, GCSFileIO, etc.), not
-   * just HadoopFileIO.
-   *
-   * <p>All input files must have identical Parquet schemas ({@link MessageType}), otherwise an
-   * exception is thrown. The merge is performed by copying row groups directly without
-   * serialization/deserialization.
-   *
-   * @param inputFiles List of Iceberg input files to merge
-   * @param outputFile Iceberg output file for the merged result
-   * @param rowGroupSize Target row group size in bytes
-   * @param columnIndexTruncateLength Maximum length for min/max values in column index
-   * @param extraMetadata Additional metadata to include in the output file footer (can be null)
-   * @throws IOException if I/O error occurs during merge operation
-   * @throws IllegalArgumentException if no input files provided or schemas don't match
-   */
-  public static void mergeFiles(
-      List<InputFile> inputFiles,
-      OutputFile outputFile,
-      long rowGroupSize,
-      int columnIndexTruncateLength,
-      Map<String, String> extraMetadata)
-      throws IOException {
-    Preconditions.checkArgument(
-        inputFiles != null && !inputFiles.isEmpty(), "No input files provided for merging");
-
-    // Validate and get the common schema from the first file
-    MessageType schema = readSchema(inputFiles.get(0));
-
-    // Validate all files have the same schema
-    for (int i = 1; i < inputFiles.size(); i++) {
-      MessageType currentSchema = readSchema(inputFiles.get(i));
-
-      if (!schema.equals(currentSchema)) {
-        throw new IllegalArgumentException(
-            String.format(
-                "Schema mismatch detected: file '%s' has schema %s but file '%s' has schema %s. "
-                    + "All files must have identical Parquet schemas for row-group level merging.",
-                inputFiles.get(0).location(), schema, inputFiles.get(i).location(), currentSchema));
-      }
-    }
-
-    // Create the output Parquet file writer
-    try (ParquetFileWriter writer =
-        new ParquetFileWriter(
-            ParquetIO.file(outputFile),
-            schema,
-            ParquetFileWriter.Mode.CREATE,
-            rowGroupSize,
-            0, // maxPaddingSize - hardcoded to 0 (same as ParquetWriter)
-            columnIndexTruncateLength,
-            ParquetProperties.DEFAULT_STATISTICS_TRUNCATE_LENGTH,
-            ParquetProperties.DEFAULT_PAGE_WRITE_CHECKSUM_ENABLED)) {
-
-      writer.start();
-
-      // Append each input file's row groups to the output
-      for (InputFile inputFile : inputFiles) {
-        writer.appendFile(ParquetIO.file(inputFile));
-      }
-
-      // End writing with optional metadata
-      if (extraMetadata != null && !extraMetadata.isEmpty()) {
-        writer.end(extraMetadata);
-      } else {
-        writer.end(emptyMap());
-      }
-    }
-  }
-
-  /**
-   * Checks if a list of Iceberg InputFiles can be merged (i.e., they all have identical schemas).
-   *
-   * <p>This method works with any Iceberg FileIO implementation (S3FileIO, GCSFileIO, etc.).
+   * <p>This method validates that all files have identical schemas. Files with or without physical
+   * _row_id columns can both be merged efficiently using different strategies.
    *
    * @param inputFiles List of Iceberg input files to check
-   * @return true if all files have identical schemas and can be merged, false otherwise
+   * @return true if files can be merged, false otherwise
    */
-  public static boolean canMerge(List<InputFile> inputFiles) {
+  public static boolean canMergeWithRowIds(List<InputFile> inputFiles) {
     try {
       if (inputFiles == null || inputFiles.isEmpty()) {
         return false;
       }
 
-      // Read schema from the first file
+      // Read schema from first file once
       MessageType firstSchema = readSchema(inputFiles.get(0));
 
       // Validate all remaining files have the same schema
       for (int i = 1; i < inputFiles.size(); i++) {
         MessageType currentSchema = readSchema(inputFiles.get(i));
-
         if (!firstSchema.equals(currentSchema)) {
           return false;
         }
@@ -202,43 +128,6 @@ public class ParquetFileMerger {
     } catch (IllegalArgumentException | IOException e) {
       return false;
     }
-  }
-
-  /**
-   * Checks if a list of Iceberg InputFiles can be merged with explicit firstRowIds.
-   *
-   * <p>This method performs additional validation beyond {@link #canMerge(List)} to ensure that
-   * files can be merged when explicit firstRowIds are provided.
-   *
-   * <p>Returns false if files already have a physical _row_id column and firstRowIds are provided,
-   * since we cannot override existing row IDs.
-   *
-   * @param inputFiles List of Iceberg input files to check
-   * @param firstRowIds Optional list of starting row IDs for each input file (null if no lineage
-   *     needed)
-   * @return true if files can be merged with the given firstRowIds, false otherwise
-   */
-  public static boolean canMergeWithRowIds(List<InputFile> inputFiles, List<Long> firstRowIds) {
-    // First check normal merge compatibility (schemas, etc.)
-    if (!canMerge(inputFiles)) {
-      return false;
-    }
-
-    // If firstRowIds provided, ensure files don't already have physical _row_id
-    boolean needsRowLineageProcessing = firstRowIds != null && !firstRowIds.isEmpty();
-    if (needsRowLineageProcessing) {
-      try {
-        MessageType schema = readSchema(inputFiles.get(0));
-        if (schema.containsField(MetadataColumns.ROW_ID.name())) {
-          // Files already have physical _row_id - can't override with new firstRowIds
-          return false;
-        }
-      } catch (IOException e) {
-        return false;
-      }
-    }
-
-    return true;
   }
 
   /**
@@ -304,6 +193,7 @@ public class ParquetFileMerger {
       for (InputFile inputFile : inputFiles) {
         writer.appendFile(ParquetIO.file(inputFile));
       }
+
       if (extraMetadata != null && !extraMetadata.isEmpty()) {
         writer.end(extraMetadata);
       } else {

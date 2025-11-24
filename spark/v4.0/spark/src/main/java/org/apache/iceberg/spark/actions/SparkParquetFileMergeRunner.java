@@ -161,27 +161,15 @@ public class SparkParquetFileMergeRunner extends SparkBinPackFileRewriteRunner {
               .map(f -> table().io().newInputFile(f.path().toString()))
               .collect(Collectors.toList());
 
-      // Check if table supports row lineage (determines if firstRowIds will be extracted)
-      boolean preserveRowLineage = TableUtil.supportsRowLineage(table());
-
-      // Extract firstRowIds from the files (null if row lineage not supported)
-      List<Long> firstRowIds = null;
-      if (preserveRowLineage) {
-        firstRowIds =
-            group.rewrittenFiles().stream().map(DataFile::firstRowId).collect(Collectors.toList());
-      }
-
-      // Validate with row lineage awareness
-      boolean canMerge = ParquetFileMerger.canMergeWithRowIds(inputFiles, firstRowIds);
+      // Validate files can be merged
+      // This checks schema compatibility
+      boolean canMerge = ParquetFileMerger.canMergeWithRowIds(inputFiles);
 
       if (!canMerge) {
         LOG.warn(
             "Cannot use row-group merge for {} files. Falling back to standard rewrite. "
-                + "Reason: {}",
-            group.rewrittenFiles().size(),
-            preserveRowLineage && !firstRowIds.isEmpty()
-                ? "Files already contain physical _row_id column and row lineage is enabled"
-                : "Schema validation failed");
+                + "Reason: Schema validation failed",
+            group.rewrittenFiles().size());
         return false;
       }
 
