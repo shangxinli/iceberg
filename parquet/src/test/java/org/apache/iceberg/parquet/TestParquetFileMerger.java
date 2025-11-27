@@ -809,4 +809,241 @@ public class TestParquetFileMerger {
         .build()
         .close();
   }
+
+  @Test
+  public void testPerformanceComparison() throws IOException {
+    // Performance test comparing normal merge vs ParquetFileMerger with row lineage
+    // Tests multiple combinations of record counts and file counts
+
+    String largeString = generateLargeString(2000); // 2KB string per field
+
+    // Test different combinations of records per file and number of files
+    // Scaled to achieve seconds-level execution times while avoiding OOM
+    int[][] testConfigurations = {
+      {5000, 5}, // 5K records x 5 files = 25K total
+      {10000, 5}, // 10K records x 5 files = 50K total
+      {5000, 10}, // 5K records x 10 files = 50K total
+      {10000, 10}, // 10K records x 10 files = 100K total
+    };
+
+    // Create schema with multiple fields to simulate realistic data
+    // 5 string fields @ 2KB each = ~10KB per record
+    Schema schema =
+        new Schema(
+            Types.NestedField.required(1, "id", Types.LongType.get()),
+            Types.NestedField.optional(2, "name", Types.StringType.get()),
+            Types.NestedField.optional(3, "description", Types.StringType.get()),
+            Types.NestedField.optional(4, "data1", Types.StringType.get()),
+            Types.NestedField.optional(5, "data2", Types.StringType.get()),
+            Types.NestedField.optional(6, "data3", Types.StringType.get()),
+            Types.NestedField.optional(7, "data4", Types.StringType.get()),
+            Types.NestedField.optional(8, "data5", Types.StringType.get()),
+            Types.NestedField.optional(9, "value", Types.DoubleType.get()),
+            Types.NestedField.optional(10, "timestamp", Types.LongType.get()));
+
+    System.out.println(
+        "\n========== PERFORMANCE TEST RESULTS (with Row Lineage) ==========");
+    System.out.println("Configuration: ~10KB per record (5 x 2KB string fields)\n");
+    System.out.println(
+        String.format(
+            "%-12s | %-8s | %-12s | %-17s | %-17s | %-12s",
+            "Recs/File",
+            "# Files",
+            "Total Recs",
+            "Normal Merger (s)",
+            "RowGroup Merger (s)",
+            "Improvement"));
+    System.out.println(
+        "-------------+---------+-------------+-------------------+-------------------+-------------");
+
+    long totalNormalDuration = 0;
+    long totalMergerDuration = 0;
+
+    for (int[] config : testConfigurations) {
+      int recordsPerFile = config[0];
+      int numFiles = config[1];
+      // Generate test files
+      List<File> testFiles = Lists.newArrayList();
+      List<InputFile> inputFiles = Lists.newArrayList();
+
+      for (int fileIdx = 0; fileIdx < numFiles; fileIdx++) {
+        File file =
+            new File(
+                tempDir,
+                String.format("perf_%drec_%dfiles_%d.parquet", recordsPerFile, numFiles, fileIdx));
+        testFiles.add(file);
+
+        List<Record> records = Lists.newArrayList();
+        for (int i = 0; i < recordsPerFile; i++) {
+          Record record = GenericRecord.create(schema);
+          record.setField("id", (long) (fileIdx * recordsPerFile + i));
+          record.setField("name", "User_" + i);
+          record.setField("description", largeString);
+          record.setField("data1", largeString);
+          record.setField("data2", largeString);
+          record.setField("data3", largeString);
+          record.setField("data4", largeString);
+          record.setField("data5", largeString);
+          record.setField("value", Math.random() * 1000);
+          record.setField("timestamp", System.currentTimeMillis());
+          records.add(record);
+        }
+
+        createParquetFileWithData(Files.localOutput(file), schema, records);
+        inputFiles.add(Files.localInput(file));
+      }
+
+      // Test 1: Normal merge (read-rewrite approach with row lineage)
+      File normalMergedFile =
+          new File(
+              tempDir,
+              String.format("normal_merged_%drec_%dfiles.parquet", recordsPerFile, numFiles));
+      long normalStartTime = System.nanoTime();
+
+      // Normal approach: read all records and write with row lineage
+      Schema schemaWithLineage =
+          new Schema(
+              Types.NestedField.required(1, "id", Types.LongType.get()),
+              Types.NestedField.optional(2, "name", Types.StringType.get()),
+              Types.NestedField.optional(3, "description", Types.StringType.get()),
+              Types.NestedField.optional(4, "data1", Types.StringType.get()),
+              Types.NestedField.optional(5, "data2", Types.StringType.get()),
+              Types.NestedField.optional(6, "data3", Types.StringType.get()),
+              Types.NestedField.optional(7, "data4", Types.StringType.get()),
+              Types.NestedField.optional(8, "data5", Types.StringType.get()),
+              Types.NestedField.optional(9, "value", Types.DoubleType.get()),
+              Types.NestedField.optional(10, "timestamp", Types.LongType.get()),
+              Types.NestedField.required(
+                  MetadataColumns.ROW_ID.fieldId(),
+                  MetadataColumns.ROW_ID.name(),
+                  Types.LongType.get()),
+              Types.NestedField.required(
+                  MetadataColumns.LAST_UPDATED_SEQUENCE_NUMBER.fieldId(),
+                  MetadataColumns.LAST_UPDATED_SEQUENCE_NUMBER.name(),
+                  Types.LongType.get()));
+
+      List<Record> allRecords = Lists.newArrayList();
+      long currentRowId = 0;
+      for (InputFile inputFile : inputFiles) {
+        List<Record> fileRecords = readData(inputFile, schema);
+        for (Record record : fileRecords) {
+          Record recordWithLineage = GenericRecord.create(schemaWithLineage);
+          recordWithLineage.setField("id", record.getField("id"));
+          recordWithLineage.setField("name", record.getField("name"));
+          recordWithLineage.setField("description", record.getField("description"));
+          recordWithLineage.setField("data1", record.getField("data1"));
+          recordWithLineage.setField("data2", record.getField("data2"));
+          recordWithLineage.setField("data3", record.getField("data3"));
+          recordWithLineage.setField("data4", record.getField("data4"));
+          recordWithLineage.setField("data5", record.getField("data5"));
+          recordWithLineage.setField("value", record.getField("value"));
+          recordWithLineage.setField("timestamp", record.getField("timestamp"));
+          recordWithLineage.setField(MetadataColumns.ROW_ID.name(), currentRowId++);
+          recordWithLineage.setField(MetadataColumns.LAST_UPDATED_SEQUENCE_NUMBER.name(), 1L);
+          allRecords.add(recordWithLineage);
+        }
+      }
+      createParquetFileWithData(Files.localOutput(normalMergedFile), schemaWithLineage, allRecords);
+
+      long normalEndTime = System.nanoTime();
+      long normalDurationMs = (normalEndTime - normalStartTime) / 1_000_000;
+      totalNormalDuration += normalDurationMs;
+
+      // Test 2: ParquetFileMerger (row-group level binary copy with row lineage synthesis)
+      File mergerFile =
+          new File(
+              tempDir,
+              String.format("merger_merged_%drec_%dfiles.parquet", recordsPerFile, numFiles));
+      long mergerStartTime = System.nanoTime();
+
+      MessageType parquetSchema = ParquetFileMerger.readSchema(inputFiles.get(0));
+      Map<String, String> metadata = ParquetFileMerger.readMetadata(inputFiles.get(0));
+
+      // Build firstRowIds and dataSequenceNumbers for row lineage
+      List<Long> firstRowIds = Lists.newArrayList();
+      List<Long> dataSequenceNumbers = Lists.newArrayList();
+      long rowIdCounter = 0;
+      for (int i = 0; i < numFiles; i++) {
+        firstRowIds.add(rowIdCounter);
+        dataSequenceNumbers.add(1L);
+        rowIdCounter += recordsPerFile;
+      }
+
+      ParquetFileMerger.mergeFiles(
+          inputFiles,
+          EncryptedFiles.plainAsEncryptedOutput(Files.localOutput(mergerFile)),
+          parquetSchema,
+          firstRowIds,
+          dataSequenceNumbers,
+          TableProperties.PARQUET_ROW_GROUP_SIZE_BYTES_DEFAULT,
+          ParquetProperties.DEFAULT_COLUMN_INDEX_TRUNCATE_LENGTH,
+          metadata);
+
+      long mergerEndTime = System.nanoTime();
+      long mergerDurationMs = (mergerEndTime - mergerStartTime) / 1_000_000;
+      totalMergerDuration += mergerDurationMs;
+
+      // Calculate improvement
+      double improvement =
+          ((normalDurationMs - mergerDurationMs) / (double) normalDurationMs) * 100;
+
+      // Convert to seconds for display
+      double normalDurationSec = normalDurationMs / 1000.0;
+      double mergerDurationSec = mergerDurationMs / 1000.0;
+
+      // Print row in table
+      System.out.println(
+          String.format(
+              "%-12s | %-8s | %-12s | %-17s | %-17s | %-11.1f%%",
+              String.format("%,d", recordsPerFile),
+              String.format("%d", numFiles),
+              String.format("%,d", numFiles * recordsPerFile),
+              String.format("%.2f", normalDurationSec),
+              String.format("%.2f", mergerDurationSec),
+              improvement));
+
+      // Verify correctness - both should have the same number of records
+      List<Record> normalRecords = readData(Files.localInput(normalMergedFile), schemaWithLineage);
+      List<Record> mergerRecords = readData(Files.localInput(mergerFile), schemaWithLineage);
+      assertThat(mergerRecords).hasSize(normalRecords.size());
+    }
+
+    System.out.println(
+        "-------------+---------+-------------+-------------------+-------------------+-------------");
+
+    // Convert totals to seconds for display
+    double totalNormalSec = totalNormalDuration / 1000.0;
+    double totalMergerSec = totalMergerDuration / 1000.0;
+
+    System.out.println(
+        String.format(
+            "%-12s | %-8s | %-12s | %-17s | %-17s | %-11.1f%%",
+            "TOTAL",
+            "",
+            "",
+            String.format("%.2f", totalNormalSec),
+            String.format("%.2f", totalMergerSec),
+            ((totalNormalDuration - totalMergerDuration) / (double) totalNormalDuration) * 100));
+    System.out.println(
+        "=============================================================================\n");
+  }
+
+  /** Helper to generate a large string for testing */
+  private String generateLargeString(int size) {
+    StringBuilder sb = new StringBuilder(size);
+    String base = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    for (int i = 0; i < size; i++) {
+      sb.append(base.charAt(i % base.length()));
+    }
+    return sb.toString();
+  }
+
+  /** Helper to get total size of files */
+  private long getTotalFileSize(List<File> files) {
+    long total = 0;
+    for (File file : files) {
+      total += file.length();
+    }
+    return total;
+  }
 }
