@@ -839,8 +839,7 @@ public class TestParquetFileMerger {
             Types.NestedField.optional(9, "value", Types.DoubleType.get()),
             Types.NestedField.optional(10, "timestamp", Types.LongType.get()));
 
-    System.out.println(
-        "\n========== PERFORMANCE TEST RESULTS (with Row Lineage) ==========");
+    System.out.println("\n========== PERFORMANCE TEST RESULTS (with Row Lineage) ==========");
     System.out.println("Configuration: ~10KB per record (5 x 2KB string fields)\n");
     System.out.println(
         String.format(
