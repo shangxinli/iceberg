@@ -208,23 +208,44 @@ public class SparkParquetFileMergeRunner extends SparkBinPackFileRewriteRunner {
   }
 
   /**
-   * Merges Parquet files in the group, respecting the expected output file count determined by the
-   * planner. Files are distributed evenly across the expected number of output files.
+   * Merges all input files in a group into a single output file.
+   *
+   * <p>This method requires that the planner creates groups with exactly one expected output file.
+   * If a group has multiple expected output files, the merge operation will fail with an
+   * UnsupportedOperationException.
+   *
+   * <p>To ensure groups produce single output files, configure: {@code
+   * rewrite-data-files.max-file-group-size-bytes = rewrite-data-files.target-file-size-bytes}
    */
   private void mergeParquetFilesDistributed(String groupId, RewriteFileGroup group) {
     PartitionSpec spec = table().specs().get(group.outputSpecId());
     StructLike partition = group.info().partition();
     int expectedOutputFiles = group.expectedOutputFiles();
 
+    // ParquetFileMerger only supports merging to a single output file
+    if (expectedOutputFiles != 1) {
+      LOG.info(
+          "Skipping Parquet merge for group {} with {} expected output files. "
+              + "ParquetFileMerger requires exactly 1 expected output file. "
+              + "Set rewrite-data-files.max-file-group-size-bytes = rewrite-data-files.target-file-size-bytes "
+              + "to ensure groups produce single output files.",
+          groupId,
+          expectedOutputFiles);
+      throw new UnsupportedOperationException(
+          "ParquetFileMerger only supports groups with exactly 1 expected output file. "
+              + "Current group has "
+              + expectedOutputFiles
+              + " expected output files.");
+    }
+
     LOG.info(
-        "Merging {} Parquet files into {} expected output files (group: {})",
+        "Merging {} Parquet files into 1 output file (group: {})",
         group.rewrittenFiles().size(),
-        expectedOutputFiles,
         groupId);
 
-    // Distribute files evenly across expected output files (planner already determined the count)
-    List<List<DataFile>> fileBatches =
-        distributeFilesEvenly(group.rewrittenFiles(), expectedOutputFiles);
+    // Create a single batch with all files
+    List<List<DataFile>> fileBatches = Lists.newArrayList();
+    fileBatches.add(Lists.newArrayList(group.rewrittenFiles()));
 
     // Get row group size from table properties
     long rowGroupSize =
@@ -296,53 +317,9 @@ public class SparkParquetFileMergeRunner extends SparkBinPackFileRewriteRunner {
     coordinator.stageRewrite(table(), groupId, newFiles);
 
     LOG.info(
-        "Successfully merged {} Parquet files into {} output files (group: {})",
+        "Successfully merged {} Parquet files into 1 output file (group: {})",
         group.rewrittenFiles().size(),
-        newFiles.size(),
         groupId);
-  }
-
-  /**
-   * Distributes files across the expected number of output files using greedy bin-packing by size.
-   *
-   * <p>This ensures each output file gets approximately the same total size of input files, rather
-   * than the same count of files.
-   */
-  private List<List<DataFile>> distributeFilesEvenly(Set<DataFile> files, int expectedOutputFiles) {
-    if (expectedOutputFiles <= 0 || files.isEmpty()) {
-      return Lists.newArrayList();
-    }
-
-    // Sort files by size (largest first) for better bin-packing
-    List<DataFile> sortedFiles = Lists.newArrayList(files);
-    sortedFiles.sort((f1, f2) -> Long.compare(f2.fileSizeInBytes(), f1.fileSizeInBytes()));
-
-    // Create bins for output files
-    List<List<DataFile>> bins = Lists.newArrayList();
-    List<Long> binSizes = Lists.newArrayList();
-    for (int i = 0; i < expectedOutputFiles; i++) {
-      bins.add(Lists.newArrayList());
-      binSizes.add(0L);
-    }
-
-    // Greedy bin-packing: assign each file to the bin with smallest current size
-    for (DataFile file : sortedFiles) {
-      int smallestBinIndex = 0;
-      long smallestBinSize = binSizes.get(0);
-
-      for (int i = 1; i < binSizes.size(); i++) {
-        if (binSizes.get(i) < smallestBinSize) {
-          smallestBinIndex = i;
-          smallestBinSize = binSizes.get(i);
-        }
-      }
-
-      bins.get(smallestBinIndex).add(file);
-      binSizes.set(smallestBinIndex, smallestBinSize + file.fileSizeInBytes());
-    }
-
-    // Return only non-empty bins
-    return bins.stream().filter(bin -> !bin.isEmpty()).collect(Collectors.toList());
   }
 
   /**
