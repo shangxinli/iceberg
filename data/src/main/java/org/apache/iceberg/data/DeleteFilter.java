@@ -51,6 +51,10 @@ import org.slf4j.LoggerFactory;
 public abstract class DeleteFilter<T> {
   private static final Logger LOG = LoggerFactory.getLogger(DeleteFilter.class);
 
+  private static final Map<Integer, Types.NestedField> METADATA_COLUMNS_BY_ID =
+      MetadataColumns.metadataColumns().stream()
+          .collect(ImmutableMap.toImmutableMap(Types.NestedField::fieldId, field -> field));
+
   private final String filePath;
   private final List<DeleteFile> posDeletes;
   private final List<DeleteFile> eqDeletes;
@@ -292,7 +296,18 @@ public abstract class DeleteFilter<T> {
       return requestedSchema;
     }
 
-    // Build column names for all requested fields plus missing fields
+    // Separate missing IDs into data and metadata columns
+    Set<Integer> missingDataIds = Sets.newLinkedHashSet();
+    Set<Integer> missingMetadataIds = Sets.newLinkedHashSet();
+    for (int fieldId : missingIds) {
+      if (MetadataColumns.isMetadataColumn(fieldId)) {
+        missingMetadataIds.add(fieldId);
+      } else {
+        missingDataIds.add(fieldId);
+      }
+    }
+
+    // Build column names for all requested fields plus missing data fields
     // We need to use Schema.select() on ALL fields together to properly handle
     // cases where multiple nested fields come from the same parent struct
     List<String> allColumnNames = Lists.newArrayList();
@@ -304,11 +319,7 @@ public abstract class DeleteFilter<T> {
       allColumnNames.add(columnName);
     }
 
-    for (int fieldId : missingIds) {
-      if (MetadataColumns.isMetadataColumn(fieldId)) {
-        continue; // add metadata columns at the end
-      }
-
+    for (int fieldId : missingDataIds) {
       String columnName = tableSchema.findColumnName(fieldId);
       Preconditions.checkArgument(
           columnName != null, "Cannot find column name for field ID %s", fieldId);
@@ -342,13 +353,12 @@ public abstract class DeleteFilter<T> {
       }
     }
 
-    // Finally, add metadata columns
-    if (missingIds.contains(MetadataColumns.ROW_POSITION.fieldId())) {
-      columns.add(MetadataColumns.ROW_POSITION);
-    }
-
-    if (missingIds.contains(MetadataColumns.IS_DELETED.fieldId())) {
-      columns.add(MetadataColumns.IS_DELETED);
+    // Finally, add metadata columns (they don't exist in tableSchema)
+    for (int fieldId : missingMetadataIds) {
+      Types.NestedField metadataColumn = METADATA_COLUMNS_BY_ID.get(fieldId);
+      Preconditions.checkArgument(
+          metadataColumn != null, "Cannot find metadata column for ID %s", fieldId);
+      columns.add(metadataColumn);
     }
 
     return new Schema(columns);
