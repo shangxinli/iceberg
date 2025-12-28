@@ -336,13 +336,19 @@ public abstract class DeleteFilter<T> {
 
     // First, add all columns from requested schema (preserves order)
     for (Types.NestedField requestedField : requestedSchema.columns()) {
-      Types.NestedField selectedField = selected.findField(requestedField.fieldId());
-      Preconditions.checkArgument(
-          selectedField != null,
-          "Cannot find requested field %s in selected schema",
-          requestedField.fieldId());
-      columns.add(selectedField);
-      addedFieldIds.add(selectedField.fieldId());
+      // Metadata columns don't exist in tableSchema/selected, use the requested field directly
+      if (MetadataColumns.isMetadataColumn(requestedField.fieldId())) {
+        columns.add(requestedField);
+        addedFieldIds.add(requestedField.fieldId());
+      } else {
+        Types.NestedField selectedField = selected.findField(requestedField.fieldId());
+        Preconditions.checkArgument(
+            selectedField != null,
+            "Cannot find requested field %s in selected schema",
+            requestedField.fieldId());
+        columns.add(selectedField);
+        addedFieldIds.add(selectedField.fieldId());
+      }
     }
 
     // Then add any new top-level fields needed for nested equality delete columns
