@@ -18,7 +18,7 @@
  */
 package org.apache.iceberg.rest;
 
-import static org.apache.iceberg.rest.RESTCatalogAdapter.Route.CONFIG;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.File;
 import java.net.InetAddress;
@@ -58,7 +58,7 @@ public class TestRESTViewCatalogWithAssumedViewSupport extends TestRESTViewCatal
               HTTPRequest httpRequest,
               Class<T> responseType,
               Consumer<Map<String, String>> responseHeaders) {
-            if (CONFIG == route) {
+            if (Route.CONFIG == route) {
               // simulate a legacy server that doesn't send back supported endpoints
               return castResponse(responseType, ConfigResponse.builder().build());
             }
@@ -108,5 +108,32 @@ public class TestRESTViewCatalogWithAssumedViewSupport extends TestRESTViewCatal
             "catalog-override-key3",
             CatalogProperties.VIEW_OVERRIDE_PREFIX + "key4",
             "catalog-override-key4"));
+  }
+
+  @Override
+  public void registerView() {
+    // Older client doesn't support the newer endpoint.
+    assertThatThrownBy(super::registerView)
+        .isInstanceOf(UnsupportedOperationException.class)
+        .hasMessageStartingWith(
+            "Server does not support endpoint: POST /v1/{prefix}/namespaces/{namespace}/register-view");
+  }
+
+  @Override
+  public void registerExistingView() {
+    // Older client doesn't support the newer endpoint.
+    assertThatThrownBy(super::registerExistingView)
+        .isInstanceOf(UnsupportedOperationException.class)
+        .hasMessageStartingWith(
+            "Server does not support endpoint: POST /v1/{prefix}/namespaces/{namespace}/register-view");
+  }
+
+  @Override
+  public void registerViewThatAlreadyExistsAsTable() {
+    // Older client doesn't support the newer endpoint.
+    assertThatThrownBy(super::registerViewThatAlreadyExistsAsTable)
+        .isInstanceOf(UnsupportedOperationException.class)
+        .hasMessageStartingWith(
+            "Server does not support endpoint: POST /v1/{prefix}/namespaces/{namespace}/register-view");
   }
 }
